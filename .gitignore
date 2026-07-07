@@ -30,3 +30,4 @@ keystore/
 *.log
 .env
 build_output.txt
+.kotlin/

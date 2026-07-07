@@ -6,6 +6,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -35,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.banktool.loanphoto.domain.entity.CustomerRow
+import com.banktool.loanphoto.domain.entity.PhotoType
 import com.banktool.loanphoto.ui.theme.Accent
 import com.banktool.loanphoto.ui.theme.Card as CardColor
 import com.banktool.loanphoto.ui.theme.Divider
@@ -49,7 +52,7 @@ import com.banktool.loanphoto.ui.theme.Warning
  *
  * 布局：
  * - 左侧：[Checkbox] 单行选择
- * - 中间：三行文本（序号+客户名 / 地址 / 性质+备注）
+ * - 中间：文本区（序号+客户名 / 地址 / 性质+备注 / 各分类拍照计数）均不截断，允许换行
  * - 右侧：照片数 Badge + 拍照按钮 + 查看照片按钮（仅 photoCount>0 时显示）
  *
  * 选中时背景为 [HighlightBg]，未选中为 [CardColor]（白色）。
@@ -58,6 +61,7 @@ import com.banktool.loanphoto.ui.theme.Warning
  *
  * @param row 客户行数据
  * @param photoCount 该行已拍照片数
+ * @param photoTypeCounts 各分类拍照计数（key=PhotoType, value=数量），仅 count>0 的分类展示
  * @param isSelected 是否被选中
  * @param isBatchMarked 是否被标记为同类型代表性户型
  * @param onSelectionToggle 切换选中状态
@@ -66,11 +70,12 @@ import com.banktool.loanphoto.ui.theme.Warning
  * @param onEditRemark 点击编辑备注按钮
  * @param onLongClick 长按行回调
  */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun CustomerRowItem(
     row: CustomerRow,
     photoCount: Int,
+    photoTypeCounts: Map<PhotoType, Int> = emptyMap(),
     isSelected: Boolean,
     isBatchMarked: Boolean = false,
     onSelectionToggle: () -> Unit,
@@ -132,8 +137,6 @@ fun CustomerRowItem(
                         color = TextColor,
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     if (isBatchMarked) {
@@ -158,8 +161,6 @@ fun CustomerRowItem(
                         text = address,
                         color = TextSecondary,
                         fontSize = 13.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                     Spacer(modifier = Modifier.size(2.dp))
                 }
@@ -173,9 +174,13 @@ fun CustomerRowItem(
                         text = meta,
                         color = TextSecondary,
                         fontSize = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
+                }
+
+                // 第四行：各分类拍照计数（仅展示 count>0 的分类）
+                if (photoTypeCounts.isNotEmpty()) {
+                    Spacer(modifier = Modifier.size(4.dp))
+                    PhotoTypeCountRow(typeCounts = photoTypeCounts)
                 }
             }
 
@@ -231,6 +236,52 @@ private fun PhotoCountBadge(photoCount: Int) {
             color = TextOnLight,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+/**
+ * 各分类拍照计数展示（[FlowRow]）。
+ *
+ * 仅展示 count>0 的分类，按 [PhotoType] 枚举顺序排列。
+ * 格式：count==1 时仅显示分类名（如「远景」），count>1 时显示「远景 2」。
+ *
+ * 数据来源说明：progress.json 的 `types` 字段为已拍摄分类集合（presence），
+ * 故每类计数为 1；待数据层扩展按照片维度记录类型后，可显示精确张数。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PhotoTypeCountRow(typeCounts: Map<PhotoType, Int>) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        // 按 PhotoType 枚举顺序展示，保证视觉稳定
+        PhotoType.entries.forEach { type ->
+            val count = typeCounts[type] ?: 0
+            if (count > 0) {
+                PhotoTypeCountChip(type = type, count = count)
+            }
+        }
+    }
+}
+
+/**
+ * 单个分类计数 Chip：[HighlightBg] 背景 + [Accent] 文字。
+ */
+@Composable
+private fun PhotoTypeCountChip(type: PhotoType, count: Int) {
+    val text = if (count > 1) "${type.displayName} $count" else type.displayName
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(HighlightBg)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        Text(
+            text = text,
+            color = Accent,
+            fontSize = 11.sp,
         )
     }
 }

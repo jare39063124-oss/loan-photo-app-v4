@@ -29,8 +29,9 @@ class AiRepository @Inject constructor(
 
     companion object {
         private const val TAG = "AiRepository"
-        private const val MODEL = "deepseek-chat"
-        private const val CHAT_MODEL = "deepseek-chat"
+        // 模型名统一来自 BuildConfig（build.gradle.kts 注入），避免与设置页展示不一致
+        private val MODEL = BuildConfig.DEEPSEEK_MODEL
+        private val CHAT_MODEL = BuildConfig.DEEPSEEK_MODEL
     }
 
     /**

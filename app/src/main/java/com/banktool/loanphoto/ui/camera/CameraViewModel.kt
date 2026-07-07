@@ -1,7 +1,10 @@
 package com.banktool.loanphoto.ui.camera
 
 import android.app.Application
+import android.content.ContentValues
 import android.content.Context
+import android.os.Build
+import android.provider.MediaStore
 import android.widget.Toast
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -261,6 +264,12 @@ class CameraViewModel @Inject constructor(
                     Timber.w("水印生成失败，保留原图: %s", savedFile.absolutePath)
                 }
 
+                // 3.5 复制到 MediaStore（DCIM/LoanPhoto），使照片在系统相册可见
+                // app 私有目录（getExternalFilesDir）不被 MediaScanner 索引，
+                // 必须通过 MediaStore API 写入公共 DCIM 目录才能在相册可见。
+                // 多选拍摄时物理文件只有一份，仅需复制一次。
+                copyToMediaStore(savedFile)
+
                 // 4. 缩略图
                 val thumbPath = withContext(Dispatchers.IO) {
                     runCatching {
@@ -379,6 +388,49 @@ class CameraViewModel @Inject constructor(
             runCatching { cameraSessionRepository.clearSession() }
                 .onFailure { Timber.w(it, "clearCameraSession 失败") }
         }
+    }
+
+    /**
+     * 将照片复制到 MediaStore（DCIM/LoanPhoto），使其在系统相册立即可见。
+     *
+     * app 私有目录（getExternalFilesDir）下的文件不被 MediaScanner 索引，
+     * 必须通过 MediaStore API 写入公共 DCIM 目录才能在相册中可见。
+     * 原 app 私有目录的文件保留不变，供缩略图/进度追踪使用。
+     *
+     * Android 10+ (Q) 使用 RELATIVE_PATH + IS_PENDING 两阶段写入；
+     * Android 9 及以下直接 insert（旧版无需 IS_PENDING）。
+     */
+    private suspend fun copyToMediaStore(sourceFile: File) = withContext(Dispatchers.IO) {
+        runCatching {
+            val resolver = app.contentResolver
+            val fileName = sourceFile.name
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/LoanPhoto")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+            }
+            val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+            val uri = resolver.insert(collection, values) ?: run {
+                Timber.w("MediaStore insert 返回 null，跳过相册复制")
+                return@runCatching
+            }
+            resolver.openOutputStream(uri)?.use { out ->
+                sourceFile.inputStream().use { input -> input.copyTo(out) }
+            } ?: run {
+                Timber.w("无法打开 MediaStore OutputStream，跳过相册复制")
+                return@runCatching
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val updateValues = ContentValues().apply {
+                    put(MediaStore.Images.Media.IS_PENDING, 0)
+                }
+                resolver.update(uri, updateValues, null, null)
+            }
+            Timber.i("照片已复制到 MediaStore (相册可见): %s", uri)
+        }.onFailure { Timber.w(it, "复制照片到 MediaStore 失败（不影响 app 内功能）") }
     }
 
     override fun onCleared() {

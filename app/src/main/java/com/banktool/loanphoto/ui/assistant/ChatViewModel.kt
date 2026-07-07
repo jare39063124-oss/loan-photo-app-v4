@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.banktool.loanphoto.data.dto.ChatMessage
 import com.banktool.loanphoto.data.repository.AiRepository
+import com.banktool.loanphoto.domain.repository.ProgressRepository
+import com.banktool.loanphoto.domain.session.PhotoSessionHolder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,7 +22,9 @@ data class ChatUiMessage(
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
-    private val aiRepository: AiRepository
+    private val aiRepository: AiRepository,
+    private val photoSessionHolder: PhotoSessionHolder,
+    private val progressRepository: ProgressRepository,
 ) : ViewModel() {
 
     private val _messages = MutableStateFlow<List<ChatUiMessage>>(emptyList())
@@ -34,7 +38,7 @@ class ChatViewModel @Inject constructor(
 
     companion object {
         private const val SYSTEM_PROMPT = """你是一名专业的银行抵押物拍照助手，可以帮助客户经理解答关于抵押物拍摄、贷款流程、房产评估等方面的问题。
-你可以参考以下客户数据、产品数据和销售记录来回答问题。
+你可以参考下方注入的当前客户清单与拍摄进度来回答问题。
 请用简洁专业的中文回答，不含 emoji。"""
     }
 
@@ -48,6 +52,36 @@ class ChatViewModel @Inject constructor(
         )
     }
 
+    /**
+     * 构建当前客户清单与拍摄进度的上下文摘要，注入 system message。
+     *
+     * 数据来源：
+     * - [photoSessionHolder.rows] 当前 Excel 的全量客户行（由 CustomerListViewModel.loadExcel 写入）
+     * - [progressRepository.getProgress] 每个客户的照片数（异步查询，限制前 30 户避免 token 爆炸）
+     */
+    private suspend fun buildContextSummary(): String {
+        val rows = photoSessionHolder.rows
+        if (rows.isEmpty()) return "\n\n（当前未加载客户清单）"
+        val sample = rows.take(30)
+        val progressMap = mutableMapOf<String, Int>()
+        for (row in sample) {
+            val count = runCatching {
+                progressRepository.getProgress(row.progressKey)?.photos?.size ?: 0
+            }.getOrDefault(0)
+            progressMap[row.progressKey] = count
+        }
+        return buildString {
+            append("\n\n当前客户清单（共 ${rows.size} 户，展示前 ${sample.size} 户）：\n")
+            sample.forEachIndexed { idx, row ->
+                val count = progressMap[row.progressKey] ?: 0
+                append("${idx + 1}. ${row.borrower} - ${row.addrGeneral}${row.addrDetail}")
+                if (row.propertyType.isNotBlank()) append("（${row.propertyType}）")
+                append(" [已拍 $count 张]\n")
+            }
+            if (rows.size > 30) append("...（及其他 ${rows.size - 30} 户）\n")
+        }
+    }
+
     fun sendMessage(content: String) {
         if (content.isBlank() || _isLoading.value) return
 
@@ -58,8 +92,9 @@ class ChatViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
+                val systemContent = SYSTEM_PROMPT + buildContextSummary()
                 val chatMessages = listOf(
-                    ChatMessage(role = "system", content = SYSTEM_PROMPT)
+                    ChatMessage(role = "system", content = systemContent)
                 ) + _messages.value.map {
                     ChatMessage(role = it.role, content = it.content)
                 }

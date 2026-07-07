@@ -3,6 +3,7 @@ package com.banktool.loanphoto.ui.customer
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.banktool.loanphoto.domain.entity.CustomerRow
+import com.banktool.loanphoto.domain.entity.PhotoType
 import com.banktool.loanphoto.domain.entity.SearchField
 import com.banktool.loanphoto.domain.repository.ExcelDataIndexRepository
 import com.banktool.loanphoto.domain.repository.ExcelRepository
@@ -69,6 +70,7 @@ class CustomerListViewModel @Inject constructor(
         val filteredIndices: List<Int> = emptyList(),
         val selectedRows: Set<Int> = emptySet(),
         val photoCounts: Map<String, Int> = emptyMap(),
+        val photoTypeCounts: Map<String, Map<PhotoType, Int>> = emptyMap(),
         val searchField: SearchField = SearchField.BORROWER,
         val searchQuery: String = "",
         val excelUri: String = "",
@@ -120,7 +122,7 @@ class CustomerListViewModel @Inject constructor(
                         )
                         .map { it.first }
                 }
-                val photoCounts = loadPhotoCounts(sorted)
+                val photoStats = loadPhotoStats(sorted)
                 val rowRemarks = progressRepository.getRowRemarks()
                 val batchMarkedKeys = progressRepository.getBatchMarkedKeys()
                 val resolvedName = fileName.ifBlank {
@@ -128,13 +130,17 @@ class CustomerListViewModel @Inject constructor(
                 }
                 val md5 = ProgressKeyUtil.excelUriMd5(uri)
                 photoSessionHolder.setExcelInfo(uri, resolvedName, md5)
+                // 同步全量客户行到 PhotoSessionHolder，供 ReportScreen 等非相机路径使用。
+                // 否则用户直接点「AI 日报表」时 sharedVm.rows 为空（仅相机导航路径会 setPhotoRows）。
+                photoSessionHolder.setPhotoRows(sorted)
                 _uiState.update {
                     it.copy(
                         isLoading = false,
                         rows = sorted,
                         filteredIndices = sorted.map { row -> row.rowIndex },
                         selectedRows = emptySet(),
-                        photoCounts = photoCounts,
+                        photoCounts = photoStats.counts,
+                        photoTypeCounts = photoStats.typeCounts,
                         excelUri = uri,
                         excelFileName = resolvedName,
                         searchQuery = "",
@@ -232,12 +238,13 @@ class CustomerListViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isRefreshingCounts = true) }
             try {
-                val counts = loadPhotoCounts(current.rows)
+                val stats = loadPhotoStats(current.rows)
                 val rowRemarks = progressRepository.getRowRemarks()
                 val batchMarkedKeys = progressRepository.getBatchMarkedKeys()
                 _uiState.update {
                     it.copy(
-                        photoCounts = counts,
+                        photoCounts = stats.counts,
+                        photoTypeCounts = stats.typeCounts,
                         rowRemarks = rowRemarks,
                         batchMarkedKeys = batchMarkedKeys,
                         isRefreshingCounts = false,
@@ -398,19 +405,48 @@ class CustomerListViewModel @Inject constructor(
     }
 
     /**
-     * 查询每个 progressKey 的照片数。在 IO 线程上顺序执行，
-     * 因 [ProgressRepository.getProgress] 内部已加 Mutex，并发亦会被串行化。
+     * 拍照统计：每行总照片数 + 各分类计数。
+     *
+     * - [counts] 总照片数（key=progressKey）
+     * - [typeCounts] 各分类计数（key=progressKey，value=PhotoType→数量）
+     *
+     * 优先使用 [PhotoRecord.photoTypes]（v4.0.1 新增，与 photos 平行的类型列表）
+     * 精确计算各分类张数；旧数据（v4.0.0）无 photoTypes 时回退到 [PhotoRecord.types]
+     * presence（每类计数为 1）。
+     *
+     * 在 IO 线程上顺序执行，因 [ProgressRepository.getProgress] 内部已加 Mutex，
+     * 并发亦会被串行化。
      */
-    private suspend fun loadPhotoCounts(rows: List<CustomerRow>): Map<String, Int> =
+    private data class PhotoStats(
+        val counts: Map<String, Int>,
+        val typeCounts: Map<String, Map<PhotoType, Int>>,
+    )
+
+    private suspend fun loadPhotoStats(rows: List<CustomerRow>): PhotoStats =
         withContext(Dispatchers.IO) {
-            val map = HashMap<String, Int>(rows.size)
+            val counts = HashMap<String, Int>(rows.size)
+            val typeCounts = HashMap<String, Map<PhotoType, Int>>(rows.size)
             for (row in rows) {
                 val record = runCatching {
                     progressRepository.getProgress(row.progressKey)
                 }.getOrNull()
-                map[row.progressKey] = record?.photos?.size ?: 0
+                val photos = record?.photos ?: emptyList()
+                counts[row.progressKey] = photos.size
+                // 优先使用 photoTypes（精确张数），旧数据回退到 types presence（每类 1）
+                val typeMap: Map<PhotoType, Int> = if (!record?.photoTypes.isNullOrEmpty()) {
+                    record!!.photoTypes
+                        .mapNotNull { name -> name.takeIf { it.isNotBlank() } }
+                        .groupingBy { PhotoType.fromDisplayName(it) }
+                        .eachCount()
+                } else {
+                    record?.types
+                        ?.mapNotNull { name -> name.takeIf { it.isNotBlank() } }
+                        ?.associate { PhotoType.fromDisplayName(it) to 1 }
+                        ?: emptyMap()
+                }
+                typeCounts[row.progressKey] = typeMap
             }
-            map
+            PhotoStats(counts, typeCounts)
         }
 
     /**

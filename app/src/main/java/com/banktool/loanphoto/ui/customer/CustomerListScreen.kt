@@ -24,6 +24,8 @@ import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
@@ -58,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.documentfile.provider.DocumentFile
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.SearchField
@@ -77,8 +80,8 @@ import com.banktool.loanphoto.ui.theme.TextSecondary
  * 客户清单列表主界面。
  *
  * 布局：
- * - Scaffold + TopAppBar（标题 + 导入/最近/报表按钮）
- * - 搜索栏（字段下拉 + 输入框 + 全选 CheckBox）
+ * - Scaffold + TopAppBar（标题 + 导入/最近/查看进度/AI 功能/设置按钮）
+ * - 搜索栏（全选 CheckBox + 字段下拉 + 输入框）
  * - LazyColumn（itemsIndexed, key = rowIndex）
  * - FAB（批量拍照）
  *
@@ -86,9 +89,11 @@ import com.banktool.loanphoto.ui.theme.TextSecondary
  *
  * @param viewModel 列表 ViewModel
  * @param onImportExcel 外部导入回调（Screen 内部已实现 SAF，此回调作为可选 hook）
- * @param onGenerateReport 跳转 AI 报表
+ * @param onGenerateReport 跳转 AI 日报表
  * @param onTakePhoto 跳转拍照（传入选中行）
  * @param onViewProgress 查看进度（跳转 ProgressScreen）
+ * @param onOpenAssistant 跳转 AI 拍摄手
+ * @param onOpenSettings 跳转设置页
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -98,21 +103,32 @@ fun CustomerListScreen(
     onGenerateReport: () -> Unit,
     onTakePhoto: (List<CustomerRow>) -> Unit,
     onViewProgress: () -> Unit = {},
+    onOpenAssistant: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // AI 功能下拉菜单展开状态
+    var showAiMenu by remember { mutableStateOf(false) }
+
+    // 拍照返回后刷新照片计数（含各分类计数）
+    LifecycleResumeEffect(Unit) {
+        viewModel.refreshPhotoCounts()
+        onPauseOrDispose { }
+    }
 
     // SAF Excel 导入
     val pickExcel = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) {
-            // 持久化 URI 读权限，避免重启后失效
+            // 持久化 URI 读写权限，避免重启后失效（写权限用于 Excel 备注 F 列回写）
             runCatching {
                 context.contentResolver.takePersistableUriPermission(
                     uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
                 )
             }
             val fileName = runCatching {
@@ -229,10 +245,40 @@ fun CustomerListScreen(
                             )
                         }
                     }
-                    IconButton(onClick = onGenerateReport) {
+                    // AI 功能入口（机器人图标 + 下拉菜单）
+                    Box {
+                        IconButton(onClick = { showAiMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Filled.SmartToy,
+                                contentDescription = "AI 功能",
+                                tint = Accent,
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showAiMenu,
+                            onDismissRequest = { showAiMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("AI 日报表") },
+                                onClick = {
+                                    showAiMenu = false
+                                    onGenerateReport()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("AI 拍摄手") },
+                                onClick = {
+                                    showAiMenu = false
+                                    onOpenAssistant()
+                                },
+                            )
+                        }
+                    }
+                    // 设置入口
+                    IconButton(onClick = onOpenSettings) {
                         Icon(
-                            imageVector = Icons.Filled.Assessment,
-                            contentDescription = "生成报表",
+                            imageVector = Icons.Filled.Settings,
+                            contentDescription = "设置",
                             tint = Accent,
                         )
                     }
@@ -306,6 +352,7 @@ fun CustomerListScreen(
                                     CustomerRowItem(
                                         row = row,
                                         photoCount = uiState.photoCounts[row.progressKey] ?: 0,
+                                        photoTypeCounts = uiState.photoTypeCounts[row.progressKey] ?: emptyMap(),
                                         isSelected = row.rowIndex in uiState.selectedRows,
                                         isBatchMarked = row.progressKey in uiState.batchMarkedKeys,
                                         onSelectionToggle = { viewModel.toggleRowSelection(row.rowIndex) },
@@ -355,7 +402,7 @@ fun CustomerListScreen(
 }
 
 /**
- * 搜索栏：字段下拉 + 输入框 + 全选 CheckBox。
+ * 搜索栏：全选 CheckBox + 字段下拉 + 输入框。
  */
 @Composable
 private fun SearchBarRow(
@@ -375,6 +422,19 @@ private fun SearchBarRow(
             .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 全选 CheckBox（置于搜索栏最左侧）
+        Checkbox(
+            checked = allFilteredSelected,
+            onCheckedChange = { onToggleSelectAll() },
+            enabled = hasFilteredItems,
+            colors = CheckboxDefaults.colors(
+                checkedColor = Accent,
+                uncheckedColor = TextSecondary,
+            ),
+        )
+
+        Spacer(modifier = Modifier.width(8.dp))
+
         // 字段下拉触发器
         Box {
             Surface(
@@ -446,17 +506,6 @@ private fun SearchBarRow(
                 unfocusedBorderColor = Divider,
             ),
             textStyle = TextStyle(fontSize = 14.sp, color = TextColor),
-        )
-
-        // 全选 CheckBox
-        Checkbox(
-            checked = allFilteredSelected,
-            onCheckedChange = { onToggleSelectAll() },
-            enabled = hasFilteredItems,
-            colors = CheckboxDefaults.colors(
-                checkedColor = Accent,
-                uncheckedColor = TextSecondary,
-            ),
         )
     }
 }

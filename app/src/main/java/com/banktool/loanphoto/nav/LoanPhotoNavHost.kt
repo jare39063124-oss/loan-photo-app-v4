@@ -11,6 +11,7 @@ import com.banktool.loanphoto.ui.customer.CustomerListScreen
 import com.banktool.loanphoto.ui.nav.NavSharedViewModel
 import com.banktool.loanphoto.ui.progress.ProgressScreen
 import com.banktool.loanphoto.ui.report.ReportScreen
+import com.banktool.loanphoto.ui.settings.SettingsScreen
 
 /**
  * 路由常量
@@ -55,6 +56,12 @@ fun LoanPhotoNavHost() {
                 onViewProgress = {
                     navController.navigate(Routes.PROGRESS)
                 },
+                onOpenAssistant = {
+                    navController.navigate(Routes.ASSISTANT)
+                },
+                onOpenSettings = {
+                    navController.navigate(Routes.SETTINGS)
+                },
             )
         }
         composable(Routes.CAMERA) {
@@ -83,13 +90,7 @@ fun LoanPhotoNavHost() {
             )
         }
         composable(Routes.SETTINGS) {
-            // TODO: 实现 SettingsScreen
-            SettingsPlaceholder()
+            SettingsScreen(onBack = { navController.popBackStack() })
         }
     }
-}
-
-@Composable
-private fun SettingsPlaceholder() {
-    // 占位：设置页面待后续实现
 }

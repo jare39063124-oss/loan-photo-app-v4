@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -135,7 +136,8 @@ fun CameraScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.TopCenter)
-                    .padding(top = 12.dp, start = 8.dp, end = 8.dp),
+                    .statusBarsPadding()
+                    .padding(top = 8.dp, start = 8.dp, end = 8.dp),
             )
 
             // 顶部右侧: 客户名 + 已拍数
@@ -146,7 +148,7 @@ fun CameraScreen(
                 totalCount = uiState.totalPhotos,
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(top = 72.dp, start = 12.dp),
+                    .padding(top = 96.dp, start = 12.dp),
             )
 
             // 底部: 控制条
@@ -197,7 +199,7 @@ private fun PhotoTypeSelector(
         modifier = modifier,
     ) {
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             items(PhotoType.entries) { type ->
@@ -207,7 +209,8 @@ private fun PhotoTypeSelector(
                     label = {
                         Text(
                             text = type.displayName,
-                            fontSize = 13.sp,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                            fontSize = 16.sp,
                             fontWeight = if (type == current) FontWeight.Bold else FontWeight.Normal,
                         )
                     },

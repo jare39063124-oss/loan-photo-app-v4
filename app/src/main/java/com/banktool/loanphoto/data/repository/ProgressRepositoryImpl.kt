@@ -291,6 +291,7 @@ private fun ProgressEntryDto.toPhotoRecord(key: String): PhotoRecord =
         photos = photos,
         // Kivy 用 Map<String,Boolean> 表示类型集合；这里取 value=true 的键
         types = types.filterValues { it }.keys,
+        photoTypes = photoTypes,
         timestamp = timestamp,
         remark = remark,
     )
@@ -299,23 +300,28 @@ private fun PhotoRecord.toEntryDto(): ProgressEntryDto =
     ProgressEntryDto(
         photos = photos,
         types = types.associateWith { true },
+        photoTypes = photoTypes,
         timestamp = timestamp,
         remark = remark,
     )
 
-/** 追加一张照片与类型，去重后更新时间戳。 */
+/** 追加一张照片与类型，去重后更新时间戳。photo_types 与 photos 平行维护。 */
 private fun ProgressEntryDto.copyWithPhoto(
     photoPath: String,
     photoType: String,
     timestamp: String,
 ): ProgressEntryDto {
-    val newPhotos = if (photos.contains(photoPath)) photos else photos + photoPath
+    val alreadyExists = photos.contains(photoPath)
+    val newPhotos = if (alreadyExists) photos else photos + photoPath
+    // photo_types 与 photos 同步追加，保持索引对齐
+    val newPhotoTypes = if (alreadyExists) photoTypes else photoTypes + photoType
     val newTypes = types.toMutableMap().apply {
         if (photoType.isNotBlank()) put(photoType, true)
     }
     return copy(
         photos = newPhotos,
         types = newTypes,
+        photoTypes = newPhotoTypes,
         timestamp = timestamp,
     )
 }

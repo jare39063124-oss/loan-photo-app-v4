@@ -11,10 +11,15 @@ import com.squareup.moshi.JsonClass
  * "<progress_key>": {
  *   "photos": ["/abs/path/photo1.jpg"],
  *   "types": {"远景": true, "近景": true},
+ *   "photo_types": ["远景", "近景", "远景"],
  *   "timestamp": "2026-07-07 10:00:00",
  *   "remark": "客户备注"
  * }
  * ```
+ *
+ * - `types`: 已拍摄分类的集合（presence，Kivy 兼容，保留）
+ * - `photo_types`: 与 `photos` 平行的类型列表（v4.0.1 新增，同索引对应同照片的类型），
+ *   用于精确计算各分类张数。旧数据（v4.0.0）无此字段时默认空列表，回退到 types presence。
  *
  * 顶层文件还包含两个特殊键：
  * - `_row_remarks`: Map<String, String>（key=行号字符串）
@@ -28,6 +33,7 @@ import com.squareup.moshi.JsonClass
 data class ProgressEntryDto(
     @Json(name = "photos") val photos: List<String> = emptyList(),
     @Json(name = "types") val types: Map<String, Boolean> = emptyMap(),
+    @Json(name = "photo_types") val photoTypes: List<String> = emptyList(),
     @Json(name = "timestamp") val timestamp: String = "",
     @Json(name = "remark") val remark: String = "",
 )

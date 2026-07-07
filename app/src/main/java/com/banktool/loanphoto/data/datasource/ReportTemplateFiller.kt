@@ -8,6 +8,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.apache.poi.ss.usermodel.CellStyle
+import org.apache.poi.ss.usermodel.CellType
 import org.apache.poi.ss.usermodel.FillPatternType
 import org.apache.poi.ss.usermodel.HorizontalAlignment
 import org.apache.poi.ss.usermodel.IndexedColors
@@ -55,7 +56,7 @@ class ReportTemplateFiller @Inject constructor(
         routeName: String,
         batchMarkedCount: Int
     ): String = withContext(Dispatchers.IO) {
-        val workbook = XSSFWorkbook(context.assets.open(TEMPLATE_ASSET))
+        val workbook = context.assets.open(TEMPLATE_ASSET).use { XSSFWorkbook(it) }
         val sheet = workbook.getSheetAt(0)
 
         // 找到数据起始行（跳过表头）
@@ -67,7 +68,7 @@ class ReportTemplateFiller @Inject constructor(
                 break
             }
             val cell = row.getCell(0)
-            if (cell == null || cell.stringCellValue.isNullOrBlank()) {
+            if (getCellString(cell).isBlank()) {
                 dataStartRow = rowNum
                 break
             }
@@ -134,6 +135,38 @@ class ReportTemplateFiller @Inject constructor(
 
         Timber.i("Report generated: ${outputFile.absolutePath}")
         outputFile.absolutePath
+    }
+
+    /**
+     * 安全读取单元格为字符串，兼容 STRING/NUMERIC/BOOLEAN/FORMULA/BLANK。
+     * 避免 NUMERIC 单元格调用 stringCellValue 抛 IllegalStateException。
+     */
+    private fun getCellString(cell: org.apache.poi.ss.usermodel.Cell?): String {
+        if (cell == null) return ""
+        return when (cell.cellType) {
+            CellType.STRING -> cell.stringCellValue.trim()
+            CellType.NUMERIC -> formatNumeric(cell.numericCellValue)
+            CellType.BOOLEAN -> cell.booleanCellValue.toString()
+            CellType.FORMULA -> formatFormula(cell)
+            CellType.BLANK -> ""
+            else -> cell.toString().trim()
+        }.trim()
+    }
+
+    /** 数字格式化：整数去 .0，避免科学计数法。 */
+    private fun formatNumeric(value: Double): String {
+        val asLong = value.toLong()
+        return if (value == asLong.toDouble()) asLong.toString() else value.toString()
+    }
+
+    /** 公式单元格：按缓存结果类型取值，避免触发 FormulaEvaluator。 */
+    private fun formatFormula(cell: org.apache.poi.ss.usermodel.Cell): String {
+        return when (cell.cachedFormulaResultType) {
+            CellType.STRING -> cell.stringCellValue.trim()
+            CellType.NUMERIC -> formatNumeric(cell.numericCellValue)
+            CellType.BOOLEAN -> cell.booleanCellValue.toString()
+            else -> cell.toString().trim()
+        }.trim()
     }
 
     /**
