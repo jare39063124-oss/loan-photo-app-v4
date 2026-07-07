@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fluent Design 浅色主题色（与 ui/theme/Color.kt 一致） -->
+    <color name="fluent_bg">#FFF2F4F8</color>
+    <color name="fluent_card">#FFFFFFFF</color>
+    <color name="fluent_accent">#FF2196F3</color>
+    <color name="fluent_accent_dark">#FF1976D2</color>
+    <color name="fluent_text">#FF212121</color>
+    <color name="fluent_text_secondary">#FF757575</color>
+    <color name="fluent_highlight_bg">#FFE3F2FD</color>
+    <color name="fluent_success">#FF4CAF50</color>
+    <color name="fluent_warning">#FFFF9800</color>
+    <color name="fluent_error">#FFF44336</color>
+    <color name="fluent_divider">#FFE0E0E0</color>
+</resources>

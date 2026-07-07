@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fluent Design 浅色主题（无 ActionBar，由 Compose 控制） -->
+    <style name="Theme.LoanPhotoApp" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/fluent_bg</item>
+        <item name="android:navigationBarColor">@color/fluent_bg</item>
+        <item name="android:windowBackground">@color/fluent_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

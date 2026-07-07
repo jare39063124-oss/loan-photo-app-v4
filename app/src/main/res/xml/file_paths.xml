@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 私有目录照片（getExternalFilesDir()/photos/） -->
+    <external-files-path
+        name="photos"
+        path="photos/" />
+
+    <!-- 缩略图目录（getExternalFilesDir()/thumbnails/） -->
+    <external-files-path
+        name="thumbnails"
+        path="thumbnails/" />
+
+    <!-- 临时目录 -->
+    <cache-path
+        name="cache"
+        path="." />
+</paths>

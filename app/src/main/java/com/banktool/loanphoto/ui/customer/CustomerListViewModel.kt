@@ -1,0 +1,454 @@
+package com.banktool.loanphoto.ui.customer
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.banktool.loanphoto.domain.entity.CustomerRow
+import com.banktool.loanphoto.domain.entity.SearchField
+import com.banktool.loanphoto.domain.repository.ExcelDataIndexRepository
+import com.banktool.loanphoto.domain.repository.ExcelRepository
+import com.banktool.loanphoto.domain.repository.ProgressRepository
+import com.banktool.loanphoto.domain.session.PhotoSessionHolder
+import com.banktool.loanphoto.ui.customer.data.RecentFilesStorage
+import com.banktool.loanphoto.util.ProgressKeyUtil
+import com.banktool.loanphoto.util.SortUtil
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import timber.log.Timber
+import javax.inject.Inject
+
+/**
+ * 最近文件 UI 模型（含数据指示信息）。
+ */
+data class RecentFileItem(
+    val uri: String,
+    val fileName: String,
+    val timestamp: Long,
+    val hasData: Boolean,
+    val dataCount: Int,
+)
+
+/**
+ * 客户清单列表 ViewModel。
+ *
+ * 职责：
+ * 1. 加载 Excel 并按地址排序
+ * 2. 实时搜索过滤（保存匹配全集 [UiState.filteredIndices]）
+ * 3. 全选作用域为 filteredIndices 全集（非仅可见行）
+ * 4. 单行反选同步表头 CheckBox 状态
+ * 5. 查询每个 progressKey 的照片数
+ * 6. 管理最近文件列表（含数据指示器）
+ * 7. 行级备注编辑（_row_remarks）
+ * 8. 同类型代表性户型标记（batch_marked）
+ */
+@HiltViewModel
+class CustomerListViewModel @Inject constructor(
+    private val excelRepository: ExcelRepository,
+    private val progressRepository: ProgressRepository,
+    private val excelDataIndexRepository: ExcelDataIndexRepository,
+    private val recentFilesStorage: RecentFilesStorage,
+    private val photoSessionHolder: PhotoSessionHolder,
+) : ViewModel() {
+
+    /**
+     * UI 状态。
+     *
+     * - [filteredIndices] 保存匹配搜索的 rowIndex 全集（不是列表位置，而是 [CustomerRow.rowIndex]）
+     * - [selectedRows] 保存被选中的 rowIndex 集合（与 filteredIndices 同维度，确保跨排序稳定）
+     * - [rowRemarks] 行级备注 Map（key=行号字符串），来自 progress.json 的 _row_remarks
+     * - [batchMarkedKeys] 已标记为同类型代表性户型的 progressKey 集合
+     */
+    data class UiState(
+        val isLoading: Boolean = false,
+        val rows: List<CustomerRow> = emptyList(),
+        val filteredIndices: List<Int> = emptyList(),
+        val selectedRows: Set<Int> = emptySet(),
+        val photoCounts: Map<String, Int> = emptyMap(),
+        val searchField: SearchField = SearchField.BORROWER,
+        val searchQuery: String = "",
+        val excelUri: String = "",
+        val excelFileName: String = "",
+        val error: String? = null,
+        val recentFiles: List<RecentFileItem> = emptyList(),
+        val showRecentFilesSheet: Boolean = false,
+        val isRefreshingCounts: Boolean = false,
+        val rowRemarks: Map<String, String> = emptyMap(),
+        val batchMarkedKeys: Set<String> = emptySet(),
+        val editingRemarkRowIndex: Int? = null,
+        val message: String? = null,
+    )
+
+    private val _uiState = MutableStateFlow(UiState())
+    val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+
+    init {
+        loadRecentFiles()
+    }
+
+    /**
+     * 加载 Excel 文件。
+     *
+     * 步骤：
+     * 1. 调用 [ExcelRepository.readExcel] 解析
+     * 2. 按 [SortUtil.addressSortKey] 排序（addrGeneral + addrDetail）
+     * 3. 查询每个 progressKey 的照片数
+     * 4. 加载行级备注和同类型标记
+     * 5. 重置搜索/选中状态，filteredIndices 默认为全集
+     * 6. 写入最近文件
+     */
+    fun loadExcel(uri: String, fileName: String = "") {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, error = null) }
+            try {
+                val rawRows = excelRepository.readExcel(uri)
+                val sorted = withContext(Dispatchers.Default) {
+                    // 预计算排序键，避免重复调用 addressSortKey
+                    rawRows
+                        .map { it to SortUtil.addressSortKey(it.addrGeneral + it.addrDetail) }
+                        .sortedWith(
+                            compareBy(
+                                { pair -> pair.second.first },
+                                { pair -> pair.second.second.first },
+                                { pair -> pair.second.second.second },
+                                { pair -> pair.first.rowIndex },
+                            ),
+                        )
+                        .map { it.first }
+                }
+                val photoCounts = loadPhotoCounts(sorted)
+                val rowRemarks = progressRepository.getRowRemarks()
+                val batchMarkedKeys = progressRepository.getBatchMarkedKeys()
+                val resolvedName = fileName.ifBlank {
+                    recentFilesStorage.getRecentFiles().firstOrNull { it.uri == uri }?.fileName ?: "未知文件"
+                }
+                val md5 = ProgressKeyUtil.excelUriMd5(uri)
+                photoSessionHolder.setExcelInfo(uri, resolvedName, md5)
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        rows = sorted,
+                        filteredIndices = sorted.map { row -> row.rowIndex },
+                        selectedRows = emptySet(),
+                        photoCounts = photoCounts,
+                        excelUri = uri,
+                        excelFileName = resolvedName,
+                        searchQuery = "",
+                        error = null,
+                        rowRemarks = rowRemarks,
+                        batchMarkedKeys = batchMarkedKeys,
+                    )
+                }
+                recentFilesStorage.addRecent(uri, resolvedName)
+                loadRecentFiles()
+            } catch (e: Exception) {
+                Timber.e(e, "加载 Excel 失败: %s", uri)
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        error = e.message ?: "加载 Excel 失败",
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * 从最近文件直接加载（uri 已知，文件名从最近列表取）。
+     */
+    fun loadFromRecent(uri: String) {
+        val fileName = _uiState.value.recentFiles.firstOrNull { it.uri == uri }?.fileName ?: ""
+        loadExcel(uri, fileName)
+    }
+
+    /**
+     * 实时搜索：输入即过滤。
+     *
+     * filteredIndices 保存匹配全集（所有满足条件的 rowIndex），
+     * 不是 LazyColumn 当前可见的子集。
+     *
+     * REMARK 字段搜索时查 progress.json 的 _row_remarks[行号] 是否 contains(query)。
+     */
+    fun onSearchQueryChange(query: String) {
+        _uiState.update { current ->
+            val filtered = filterRows(current.rows, query, current.searchField, current.rowRemarks)
+            current.copy(searchQuery = query, filteredIndices = filtered)
+        }
+    }
+
+    /**
+     * 切换搜索字段后重新过滤。
+     */
+    fun onSearchFieldChange(field: SearchField) {
+        _uiState.update { current ->
+            val filtered = filterRows(current.rows, current.searchQuery, field, current.rowRemarks)
+            current.copy(searchField = field, filteredIndices = filtered)
+        }
+    }
+
+    /**
+     * 全选/反选：作用域为 [UiState.filteredIndices] 全集（非仅可见行）。
+     *
+     * - 若当前已选中全部 filteredIndices，则取消选中这些项（保留未在过滤集内的其他选中项）
+     * - 否则把 filteredIndices 全部加入选中
+     */
+    fun toggleSelectAll() {
+        _uiState.update { current ->
+            if (current.filteredIndices.isEmpty()) return@update current
+            val allSelected = current.selectedRows.containsAll(current.filteredIndices)
+            val newSelection = if (allSelected) {
+                current.selectedRows - current.filteredIndices.toSet()
+            } else {
+                current.selectedRows + current.filteredIndices
+            }
+            current.copy(selectedRows = newSelection)
+        }
+    }
+
+    /**
+     * 单行选择切换。选中状态用 rowIndex 标识（跨排序稳定）。
+     */
+    fun toggleRowSelection(rowIndex: Int) {
+        _uiState.update { current ->
+            val newSelection = if (rowIndex in current.selectedRows) {
+                current.selectedRows - rowIndex
+            } else {
+                current.selectedRows + rowIndex
+            }
+            current.copy(selectedRows = newSelection)
+        }
+    }
+
+    /**
+     * 刷新照片计数（拍照返回后调用）。
+     */
+    fun refreshPhotoCounts() {
+        val current = _uiState.value
+        if (current.rows.isEmpty()) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isRefreshingCounts = true) }
+            try {
+                val counts = loadPhotoCounts(current.rows)
+                val rowRemarks = progressRepository.getRowRemarks()
+                val batchMarkedKeys = progressRepository.getBatchMarkedKeys()
+                _uiState.update {
+                    it.copy(
+                        photoCounts = counts,
+                        rowRemarks = rowRemarks,
+                        batchMarkedKeys = batchMarkedKeys,
+                        isRefreshingCounts = false,
+                    )
+                }
+            } catch (e: Exception) {
+                Timber.w(e, "刷新照片计数失败")
+                _uiState.update { it.copy(isRefreshingCounts = false) }
+            }
+        }
+    }
+
+    /**
+     * 显示最近文件 BottomSheet。
+     */
+    fun showRecentFilesSheet() {
+        loadRecentFiles()
+        _uiState.update { it.copy(showRecentFilesSheet = true) }
+    }
+
+    /**
+     * 隐藏最近文件 BottomSheet。
+     */
+    fun hideRecentFilesSheet() {
+        _uiState.update { it.copy(showRecentFilesSheet = false) }
+    }
+
+    /**
+     * 清除错误状态。
+     */
+    fun clearError() {
+        _uiState.update { it.copy(error = null, message = null) }
+    }
+
+    /**
+     * 获取当前选中的客户行列表（用于批量拍照）。
+     */
+    fun getSelectedRows(): List<CustomerRow> {
+        val current = _uiState.value
+        val selected = current.selectedRows
+        return if (selected.isEmpty()) {
+            emptyList()
+        } else {
+            current.rows.filter { it.rowIndex in selected }
+        }
+    }
+
+    // ---- 行级备注 ----
+
+    /**
+     * 打开备注编辑弹窗。
+     */
+    fun startEditRemark(rowIndex: Int) {
+        _uiState.update { it.copy(editingRemarkRowIndex = rowIndex) }
+    }
+
+    /**
+     * 关闭备注编辑弹窗。
+     */
+    fun dismissEditRemark() {
+        _uiState.update { it.copy(editingRemarkRowIndex = null) }
+    }
+
+    /**
+     * 保存行级备注到 progress.json 的 _row_remarks。
+     */
+    fun saveRowRemark(rowIndex: Int, content: String) {
+        viewModelScope.launch {
+            try {
+                progressRepository.saveRowRemark(rowIndex, content)
+                _uiState.update { current ->
+                    val newRemarks = current.rowRemarks.toMutableMap()
+                    if (content.isBlank()) {
+                        newRemarks.remove(rowIndex.toString())
+                    } else {
+                        newRemarks[rowIndex.toString()] = content
+                    }
+                    current.copy(
+                        rowRemarks = newRemarks,
+                        editingRemarkRowIndex = null,
+                        message = "备注已保存",
+                    )
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "保存备注失败")
+                _uiState.update {
+                    it.copy(error = e.message ?: "保存备注失败", editingRemarkRowIndex = null)
+                }
+            }
+        }
+    }
+
+    /**
+     * 获取某行备注内容。
+     */
+    fun getRowRemark(rowIndex: Int): String =
+        _uiState.value.rowRemarks[rowIndex.toString()] ?: ""
+
+    // ---- 同类型代表性户型标记 ----
+
+    /**
+     * 切换某行的同类型代表性户型标记。
+     */
+    fun toggleBatchMarked(progressKey: String) {
+        viewModelScope.launch {
+            try {
+                val current = _uiState.value
+                val isMarked = progressKey in current.batchMarkedKeys
+                progressRepository.setBatchMarked(progressKey, !isMarked)
+                _uiState.update { state ->
+                    val newKeys = state.batchMarkedKeys.toMutableSet()
+                    if (isMarked) {
+                        newKeys.remove(progressKey)
+                    } else {
+                        newKeys.add(progressKey)
+                    }
+                    state.copy(
+                        batchMarkedKeys = newKeys,
+                        message = if (isMarked) "已取消标记" else "已标记为同类型代表性户型",
+                    )
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "切换批量标记失败")
+                _uiState.update { it.copy(error = e.message ?: "切换标记失败") }
+            }
+        }
+    }
+
+    // ---- 内部辅助 ----
+
+    /**
+     * 加载最近文件并附带数据指示器（通过 [ExcelDataIndexRepository] 查询每个文件的 progressKey 数量）。
+     */
+    private fun loadRecentFiles() {
+        viewModelScope.launch {
+            try {
+                val raw = recentFilesStorage.getRecentFiles()
+                val items = withContext(Dispatchers.IO) {
+                    raw.map { file ->
+                        val md5 = ProgressKeyUtil.excelUriMd5(file.uri)
+                        val keys = runCatching {
+                            excelDataIndexRepository.getProgressKeys(md5)
+                        }.getOrDefault(emptyList())
+                        RecentFileItem(
+                            uri = file.uri,
+                            fileName = file.fileName,
+                            timestamp = file.timestamp,
+                            hasData = keys.isNotEmpty(),
+                            dataCount = keys.size,
+                        )
+                    }
+                }
+                _uiState.update { it.copy(recentFiles = items) }
+            } catch (e: Exception) {
+                Timber.w(e, "加载最近文件失败")
+            }
+        }
+    }
+
+    /**
+     * 查询每个 progressKey 的照片数。在 IO 线程上顺序执行，
+     * 因 [ProgressRepository.getProgress] 内部已加 Mutex，并发亦会被串行化。
+     */
+    private suspend fun loadPhotoCounts(rows: List<CustomerRow>): Map<String, Int> =
+        withContext(Dispatchers.IO) {
+            val map = HashMap<String, Int>(rows.size)
+            for (row in rows) {
+                val record = runCatching {
+                    progressRepository.getProgress(row.progressKey)
+                }.getOrNull()
+                map[row.progressKey] = record?.photos?.size ?: 0
+            }
+            map
+        }
+
+    /**
+     * 按 [field] 和 [query] 过滤行，返回匹配的 rowIndex 列表。
+     * query 为空时返回全集。
+     *
+     * REMARK 字段查 [rowRemarks] (progress.json 的 _row_remarks[行号])。
+     */
+    private fun filterRows(
+        rows: List<CustomerRow>,
+        query: String,
+        field: SearchField,
+        rowRemarks: Map<String, String>,
+    ): List<Int> {
+        if (query.isBlank()) return rows.map { it.rowIndex }
+        val keyword = query.trim()
+        return rows.asSequence()
+            .filter { row -> matchField(row, keyword, field, rowRemarks) }
+            .map { it.rowIndex }
+            .toList()
+    }
+
+    private fun matchField(
+        row: CustomerRow,
+        keyword: String,
+        field: SearchField,
+        rowRemarks: Map<String, String>,
+    ): Boolean {
+        return when (field) {
+            SearchField.SERIAL -> row.serial.contains(keyword, ignoreCase = true)
+            SearchField.BORROWER -> row.borrower.contains(keyword, ignoreCase = true)
+            SearchField.ADDR_GENERAL -> row.addrGeneral.contains(keyword, ignoreCase = true)
+            SearchField.ADDR_DETAIL -> row.addrDetail.contains(keyword, ignoreCase = true)
+            SearchField.REMARK -> {
+                // 查 progress.json 的 _row_remarks[行号] 是否 contains(query)
+                val remark = rowRemarks[row.rowIndex.toString()] ?: row.remark
+                remark.contains(keyword, ignoreCase = true)
+            }
+        }
+    }
+}

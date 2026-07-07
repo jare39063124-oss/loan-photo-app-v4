@@ -1,0 +1,11 @@
+# local.properties 模板
+# 复制此文件为 local.properties 并填入真实值
+# local.properties 已在 .gitignore 中，不会提交到 git
+
+# Android SDK 路径（必填）
+sdk.dir=D:\\AndroidSdk
+
+# DeepSeek API Key（必填）
+# 从 https://platform.deepseek.com 获取
+# 注意：此 key 不会提交到 git，仅用于本地构建时注入 BuildConfig
+DEEPSEEK_API_KEY=sk-your-deepseek-api-key-here
