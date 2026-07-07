@@ -11,12 +11,15 @@ import androidx.camera.core.ImageCaptureException
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.banktool.loanphoto.data.camera.LocationResult
 import com.banktool.loanphoto.data.camera.LocationService
 import com.banktool.loanphoto.data.camera.ThumbnailGenerator
 import com.banktool.loanphoto.data.camera.WatermarkConfig
 import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkGenerator
 import com.banktool.loanphoto.data.camera.WatermarkPosition
+import com.banktool.loanphoto.data.naming.NamingConfigRepository
+import com.banktool.loanphoto.data.naming.NamingRuleGenerator
 import com.banktool.loanphoto.domain.entity.CameraSession
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.PhotoType
@@ -56,6 +59,7 @@ data class CameraUiState(
     val showGallery: Boolean = false,
     val toastMessage: String? = null,
     val cameraReady: Boolean = false,
+    val locationFailed: Boolean = false,
 )
 
 /**
@@ -78,6 +82,8 @@ class CameraViewModel @Inject constructor(
     private val locationService: LocationService,
     private val watermarkGenerator: WatermarkGenerator,
     private val thumbnailGenerator: ThumbnailGenerator,
+    private val namingConfigRepository: NamingConfigRepository,
+    private val namingRuleGenerator: NamingRuleGenerator,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CameraUiState())
@@ -152,15 +158,45 @@ class CameraViewModel @Inject constructor(
     }
 
     /**
+     * 位置预热：在进入相机界面或获得位置权限后立即触发一次定位。
+     *
+     * - 成功：清零 [CameraUiState.locationFailed]，缓存将在 5 分钟内被复用
+     * - 失败：置位 [CameraUiState.locationFailed]，触发 Snackbar 提示用户检查权限/GPS
+     *
+     * 不阻塞 UI，失败也不抛异常（仅记录日志）。
+     */
+    fun prewarmLocation() {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    locationService.getCurrentLocation()
+                } catch (e: Exception) {
+                    Timber.w(e, "预热定位失败")
+                    null
+                }
+            }
+            if (result == null) {
+                _uiState.update { it.copy(locationFailed = true) }
+            } else {
+                _uiState.update { it.copy(locationFailed = false) }
+            }
+        }
+    }
+
+    /**
      * 触发拍照。
      *
      * 流程：
      * 1. 校验 [ImageCapture] 与主 key 就绪
-     * 2. 准备输出文件 `photos/<progressKey>/<timestamp>.jpg`
+     * 2. 准备输出文件 `photos/<progressKey>/<fileName>.jpg`
+     *    （文件名由 [NamingRuleGenerator] 按用户配置生成，全 NONE 时回退 IMG_<timestamp>.jpg）
      * 3. saveCameraSession（带 photo_path/photo_launch_time，防进程死亡）
      * 4. ImageCapture.takePicture(OutputFileOptions, mainExecutor, callback)
      * 5. 成功回调 [onImageSaved]：取位置 -> 水印 -> 缩略图 -> markPhoto -> Toast
      * 6. 失败回调 [onCaptureError]：Toast + Timber
+     *
+     * 因 [NamingConfigRepository.getConfig] 为 suspend，文件名生成在协程中完成，
+     * 随后切回主线程调用 [captureToFile]。
      */
     fun takePhoto() {
         val primary = _uiState.value.primaryRow ?: run {
@@ -172,28 +208,60 @@ class CameraViewModel @Inject constructor(
             return
         }
 
+        val currentPhotoType = _uiState.value.currentPhotoType
         val ctx: Context = app
         val photosDir = File(ctx.getExternalFilesDir(null), "photos/${primary.progressKey}")
         if (!photosDir.exists()) photosDir.mkdirs()
-        val fileName = "IMG_${System.currentTimeMillis()}.jpg"
-        val outputFile = File(photosDir, fileName)
-
-        // 持久化会话（防止拍照过程中被系统杀死）
-        saveCameraSession(
-            launched = true,
-            photoPath = outputFile.absolutePath,
-            mediaUri = null,
-        )
 
         _uiState.update { it.copy(isCapturing = true, lastSavedPath = null) }
 
-        captureToFile(
-            imageCapture = imageCapture,
-            outputFile = outputFile,
-            executor = mainExecutor,
-            onImageSaved = { saved -> onImageSaved(saved, primary) },
-            onError = { exc -> onCaptureError(exc) },
-        )
+        viewModelScope.launch {
+            // 文件名生成（config 读取需在 IO 线程）
+            val fileName = withContext(Dispatchers.IO) {
+                val config = namingConfigRepository.getConfig()
+                val sequence = calculateNextSequence(photosDir, currentPhotoType)
+                namingRuleGenerator.generate(
+                    config = config,
+                    customerRow = primary,
+                    photoType = currentPhotoType,
+                    sequence = sequence,
+                )
+            }
+            val outputFile = File(photosDir, fileName)
+
+            // 持久化会话（防止拍照过程中被系统杀死）
+            saveCameraSession(
+                launched = true,
+                photoPath = outputFile.absolutePath,
+                mediaUri = null,
+            )
+
+            captureToFile(
+                imageCapture = imageCapture,
+                outputFile = outputFile,
+                executor = mainExecutor,
+                onImageSaved = { saved -> onImageSaved(saved, primary) },
+                onError = { exc -> onCaptureError(exc) },
+            )
+        }
+    }
+
+    /**
+     * 计算下一个序号：扫描 [photosDir] 下已存在的 .jpg 文件，
+     * 统计文件名中包含 `-${photoType.displayName}-` 的数量 + 1。
+     *
+     * - 目录不存在或无匹配文件时返回 1
+     * - 当 [NamingConfig.isAllNone] 时 NamingRuleGenerator 会回退 IMG_<timestamp>.jpg，
+     *   此时序号不影响结果，但调用本方法无害
+     */
+    private fun calculateNextSequence(photosDir: File, photoType: PhotoType): Int {
+        if (!photosDir.exists()) return 1
+        val existing = photosDir.listFiles { f -> f.isFile && f.name.endsWith(".jpg", ignoreCase = true) }
+            ?: return 1
+        val count = existing.count { f ->
+            f.name.contains("-${photoType.displayName}-", ignoreCase = true)
+        }
+        return count + 1
     }
 
     /**
@@ -226,21 +294,22 @@ class CameraViewModel @Inject constructor(
                 val primaryKey = primary.progressKey
                 val photoType = _uiState.value.currentPhotoType.displayName
 
-                // 1. 位置
-                val location = withContext(Dispatchers.IO) {
-                    runCatching { locationService.getCurrentLocation() }
-                        .getOrNull()
-                } ?: com.banktool.loanphoto.data.camera.LocationResult(
-                    lat = 0.0, lng = 0.0, address = "未知位置",
-                    timestamp = System.currentTimeMillis(),
-                )
+                // 1. 位置（失败时返回 null，触发「定位失败」水印，不再兜底伪造坐标）
+                val location: LocationResult? = withContext(Dispatchers.IO) {
+                    try {
+                        locationService.getCurrentLocation()
+                    } catch (e: Exception) {
+                        Timber.w(e, "定位失败")
+                        null
+                    }
+                }
+                // 同步更新定位失败状态（供 Snackbar 显示）
+                _uiState.update { it.copy(locationFailed = location == null) }
 
-                // 2. 水印内容
+                // 2. 水印内容（location 为 null 时内部自动渲染「定位失败」段）
                 val segments = watermarkGenerator.buildSegments(
                     captureTimeMillis = System.currentTimeMillis(),
-                    address = location.address,
-                    lat = location.lat,
-                    lng = location.lng,
+                    location = location,
                 )
                 val config = WatermarkConfig(
                     segments = segments,
@@ -255,8 +324,7 @@ class CameraViewModel @Inject constructor(
                     watermarkGenerator.drawAndSave(
                         sourcePath = savedFile.absolutePath,
                         outputPath = savedFile.absolutePath,
-                        lat = location.lat,
-                        lng = location.lng,
+                        location = location,
                         config = config,
                     )
                 }

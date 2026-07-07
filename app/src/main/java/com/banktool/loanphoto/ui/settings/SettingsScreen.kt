@@ -1,7 +1,10 @@
 package com.banktool.loanphoto.ui.settings
 
 import android.widget.Toast
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,10 +17,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -40,12 +46,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.banktool.loanphoto.BuildConfig
+import com.banktool.loanphoto.data.naming.NameSegment
 import com.banktool.loanphoto.ui.theme.Accent
 import com.banktool.loanphoto.ui.theme.Bg
 import com.banktool.loanphoto.ui.theme.Card as CardColor
 import com.banktool.loanphoto.ui.theme.Divider
 import com.banktool.loanphoto.ui.theme.Error
+import com.banktool.loanphoto.ui.theme.HighlightBg
 import com.banktool.loanphoto.ui.theme.Text as TextColor
 import com.banktool.loanphoto.ui.theme.TextSecondary
 import kotlinx.coroutines.Dispatchers
@@ -59,18 +69,25 @@ import java.io.File
  * 卡片内容：
  * - 关于：应用名「资产盘点拍照工具」+ 版本号（[BuildConfig.VERSION_NAME]）
  * - AI 模型：DeepSeek `deepseek-v4-flash`（[BuildConfig.DEEPSEEK_MODEL]）
+ * - 照片命名规则：4 段下拉选择器 + 实时预览（持久化到 DataStore）
  * - 清空缓存：删除 `getExternalFilesDir/photos` 与 `reports` 目录（带确认对话框）
  *
  * 使用 Fluent Design 浅色主题。
  *
  * @param onBack 返回上一页
+ * @param viewModel 设置页 ViewModel（默认由 Hilt 提供）
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(
+    onBack: () -> Unit,
+    viewModel: SettingsViewModel = hiltViewModel(),
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showClearCacheDialog by remember { mutableStateOf(false) }
+
+    val namingConfig by viewModel.namingConfig.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -120,6 +137,54 @@ fun SettingsScreen(onBack: () -> Unit) {
                 SettingsRow(label = "服务商", value = "DeepSeek")
                 SettingsDivider()
                 SettingsRow(label = "模型", value = BuildConfig.DEEPSEEK_MODEL)
+            }
+
+            // 照片命名规则
+            SettingsCard(title = "照片命名规则") {
+                Text(
+                    text = "选择 4 段命名组成部分，按顺序以「-」拼接生成照片文件名。",
+                    fontSize = 13.sp,
+                    color = TextSecondary,
+                )
+                Spacer(modifier = Modifier.size(12.dp))
+                NamingSegmentDropdown(
+                    label = "段 1",
+                    selected = namingConfig.segment1,
+                    onSelect = { viewModel.setSegment(0, it) },
+                )
+                Spacer(modifier = Modifier.size(8.dp))
+                NamingSegmentDropdown(
+                    label = "段 2",
+                    selected = namingConfig.segment2,
+                    onSelect = { viewModel.setSegment(1, it) },
+                )
+                Spacer(modifier = Modifier.size(8.dp))
+                NamingSegmentDropdown(
+                    label = "段 3",
+                    selected = namingConfig.segment3,
+                    onSelect = { viewModel.setSegment(2, it) },
+                )
+                Spacer(modifier = Modifier.size(8.dp))
+                NamingSegmentDropdown(
+                    label = "段 4",
+                    selected = namingConfig.segment4,
+                    onSelect = { viewModel.setSegment(3, it) },
+                )
+                Spacer(modifier = Modifier.size(12.dp))
+                SettingsDivider()
+                Spacer(modifier = Modifier.size(12.dp))
+                Text(
+                    text = "示例预览",
+                    fontSize = 12.sp,
+                    color = TextSecondary,
+                )
+                Spacer(modifier = Modifier.size(4.dp))
+                Text(
+                    text = viewModel.previewFileName(namingConfig),
+                    fontSize = 13.sp,
+                    color = Accent,
+                    fontWeight = FontWeight.Medium,
+                )
             }
 
             // 缓存
@@ -244,6 +309,69 @@ private fun SettingsRow(label: String, value: String) {
 @Composable
 private fun SettingsDivider() {
     HorizontalDivider(color = Divider)
+}
+
+/**
+ * 命名段下拉选择器。
+ *
+ * 点击触发 [DropdownMenu]，选项为 [NameSegment.entries] 全集（拍摄日期/客户名/地址+时间/空值）。
+ * 选择后立即回调 [onSelect] 持久化。
+ *
+ * @param label 段标签（如「段 1」）
+ * @param selected 当前选中的段
+ * @param onSelect 选择回调
+ */
+@Composable
+private fun NamingSegmentDropdown(
+    label: String,
+    selected: NameSegment,
+    onSelect: (NameSegment) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = true }
+                .background(HighlightBg, RoundedCornerShape(6.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Text(
+                    text = label,
+                    fontSize = 12.sp,
+                    color = TextSecondary,
+                )
+                Text(
+                    text = selected.displayName,
+                    fontSize = 14.sp,
+                    color = TextColor,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+            Icon(
+                imageVector = Icons.Filled.ArrowDropDown,
+                contentDescription = "展开选项",
+                tint = Accent,
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            NameSegment.entries.forEach { segment ->
+                DropdownMenuItem(
+                    text = { Text(segment.displayName) },
+                    onClick = {
+                        onSelect(segment)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
 }
 
 /**

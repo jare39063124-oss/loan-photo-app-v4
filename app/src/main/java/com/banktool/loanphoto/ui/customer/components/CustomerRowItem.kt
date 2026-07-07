@@ -32,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -40,9 +41,7 @@ import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.PhotoType
 import com.banktool.loanphoto.ui.theme.Accent
 import com.banktool.loanphoto.ui.theme.Card as CardColor
-import com.banktool.loanphoto.ui.theme.Divider
 import com.banktool.loanphoto.ui.theme.HighlightBg
-import com.banktool.loanphoto.ui.theme.Text as TextColor
 import com.banktool.loanphoto.ui.theme.TextOnLight
 import com.banktool.loanphoto.ui.theme.TextSecondary
 import com.banktool.loanphoto.ui.theme.Warning
@@ -50,10 +49,10 @@ import com.banktool.loanphoto.ui.theme.Warning
 /**
  * 客户清单中的单行卡片。
  *
- * 布局：
- * - 左侧：[Checkbox] 单行选择
- * - 中间：文本区（序号+客户名 / 地址 / 性质+备注 / 各分类拍照计数）均不截断，允许换行
- * - 右侧：照片数 Badge + 拍照按钮 + 查看照片按钮（仅 photoCount>0 时显示）
+ * v4.0.2 布局：
+ * - [Checkbox] 单行选择
+ * - 左侧竖版操作列（宽 48dp）：PhotoCountBadge + 拍照 + 查看已拍（始终显示）+ 编辑备注
+ * - 右侧文本列（weight=1f）：[序号] 借款人名 / 地址 / 性质+备注 / 全量分类计数
  *
  * 选中时背景为 [HighlightBg]，未选中为 [CardColor]（白色）。
  * 被标记为同类型代表性户型时显示星标。
@@ -61,12 +60,12 @@ import com.banktool.loanphoto.ui.theme.Warning
  *
  * @param row 客户行数据
  * @param photoCount 该行已拍照片数
- * @param photoTypeCounts 各分类拍照计数（key=PhotoType, value=数量），仅 count>0 的分类展示
+ * @param photoTypeCounts 各分类拍照计数（key=PhotoType, value=数量）
  * @param isSelected 是否被选中
  * @param isBatchMarked 是否被标记为同类型代表性户型
  * @param onSelectionToggle 切换选中状态
  * @param onTakePhoto 点击拍照按钮
- * @param onViewPhotos 点击查看照片按钮
+ * @param onViewPhotos 点击查看照片按钮（即使 photoCount=0 也会触发）
  * @param onEditRemark 点击编辑备注按钮
  * @param onLongClick 长按行回调
  */
@@ -101,7 +100,7 @@ fun CustomerRowItem(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalAlignment = Alignment.Top,
         ) {
             Checkbox(
                 checked = isSelected,
@@ -114,19 +113,57 @@ fun CustomerRowItem(
 
             Spacer(modifier = Modifier.width(4.dp))
 
+            // 左侧竖版操作列（宽 48dp）：Badge + 拍照 + 查看已拍 + 备注
+            Column(
+                modifier = Modifier.width(48.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                PhotoCountBadge(photoCount = photoCount)
+
+                IconButton(onClick = onTakePhoto) {
+                    Icon(
+                        imageVector = Icons.Filled.CameraAlt,
+                        contentDescription = "拍照",
+                        tint = Accent,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+
+                // 查看已拍按钮：始终显示（即使 photoCount=0）
+                IconButton(onClick = onViewPhotos) {
+                    Icon(
+                        imageVector = Icons.Filled.Photo,
+                        contentDescription = "查看已拍",
+                        tint = Accent,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+
+                IconButton(onClick = onEditRemark) {
+                    Icon(
+                        imageVector = Icons.Filled.Edit,
+                        contentDescription = "编辑备注",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+
+            // 右侧文本列
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(end = 8.dp),
+                    .padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
             ) {
-                // 第一行：[序号] 客户名 + 同类型标记星标
+                // 第一行：[序号] 借款人名 + 同类型标记星标
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (row.serial.isNotBlank()) {
                         Text(
                             text = "[${row.serial}]",
                             color = Accent,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
+                            fontSize = 16.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -134,9 +171,9 @@ fun CustomerRowItem(
                     }
                     Text(
                         text = row.borrower.ifBlank { "未命名客户" },
-                        color = TextColor,
+                        color = Accent,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
+                        fontSize = 16.sp,
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     if (isBatchMarked) {
@@ -160,7 +197,7 @@ fun CustomerRowItem(
                     Text(
                         text = address,
                         color = TextSecondary,
-                        fontSize = 13.sp,
+                        fontSize = 14.sp,
                     )
                     Spacer(modifier = Modifier.size(2.dp))
                 }
@@ -177,42 +214,11 @@ fun CustomerRowItem(
                     )
                 }
 
-                // 第四行：各分类拍照计数（仅展示 count>0 的分类）
-                if (photoTypeCounts.isNotEmpty()) {
-                    Spacer(modifier = Modifier.size(4.dp))
-                    PhotoTypeCountRow(typeCounts = photoTypeCounts)
-                }
-            }
-
-            // 照片数 Badge
-            PhotoCountBadge(photoCount = photoCount)
-
-            // 拍照按钮
-            IconButton(onClick = onTakePhoto) {
-                Icon(
-                    imageVector = Icons.Filled.CameraAlt,
-                    contentDescription = "拍照",
-                    tint = Accent,
-                )
-            }
-
-            // 查看照片按钮（仅 photoCount>0 时显示）
-            if (photoCount > 0) {
-                IconButton(onClick = onViewPhotos) {
-                    Icon(
-                        imageVector = Icons.Filled.Photo,
-                        contentDescription = "查看照片",
-                        tint = Accent,
-                    )
-                }
-            }
-
-            // 编辑备注按钮
-            IconButton(onClick = onEditRemark) {
-                Icon(
-                    imageVector = Icons.Filled.Edit,
-                    contentDescription = "编辑备注",
-                    tint = TextSecondary,
+                // 第四行：全量分类计数（始终展示全部 5 类 + 总计）
+                Spacer(modifier = Modifier.size(4.dp))
+                PhotoTypeCountRow(
+                    typeCounts = photoTypeCounts,
+                    totalCount = photoCount,
                 )
             }
         }
@@ -241,46 +247,76 @@ private fun PhotoCountBadge(photoCount: Int) {
 }
 
 /**
- * 各分类拍照计数展示（[FlowRow]）。
+ * 全量分类计数展示（[FlowRow]）。
  *
- * 仅展示 count>0 的分类，按 [PhotoType] 枚举顺序排列。
- * 格式：count==1 时仅显示分类名（如「远景」），count>1 时显示「远景 2」。
+ * v4.0.2：始终遍历 [PhotoType.entries] 展示全部 5 个分类 + 「总计」前缀。
+ * 格式示例：「总计 N  远景0 近景2 内部1 瑕疵0 其他0」
  *
- * 数据来源说明：progress.json 的 `types` 字段为已拍摄分类集合（presence），
- * 故每类计数为 1；待数据层扩展按照片维度记录类型后，可显示精确张数。
+ * - 总计：[Accent] 背景 + [TextOnLight] 文字（强调）
+ * - count>0 分类：[HighlightBg] 背景 + [Accent] 文字
+ * - count=0 分类：透明背景 + [TextSecondary] 文字（弱化）
+ *
+ * @param typeCounts 各分类计数
+ * @param totalCount 总照片数（用于「总计」chip）
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PhotoTypeCountRow(typeCounts: Map<PhotoType, Int>) {
+private fun PhotoTypeCountRow(typeCounts: Map<PhotoType, Int>, totalCount: Int) {
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        // 按 PhotoType 枚举顺序展示，保证视觉稳定
+        // 总计 chip（Accent 强调）
+        TotalCountChip(total = totalCount)
+        // 全量分类 chip
         PhotoType.entries.forEach { type ->
             val count = typeCounts[type] ?: 0
-            if (count > 0) {
-                PhotoTypeCountChip(type = type, count = count)
-            }
+            PhotoTypeCountChip(type = type, count = count)
         }
     }
 }
 
 /**
- * 单个分类计数 Chip：[HighlightBg] 背景 + [Accent] 文字。
+ * 总计 chip：[Accent] 实心背景 + 白色加粗文字。
  */
 @Composable
-private fun PhotoTypeCountChip(type: PhotoType, count: Int) {
-    val text = if (count > 1) "${type.displayName} $count" else type.displayName
+private fun TotalCountChip(total: Int) {
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(4.dp))
-            .background(HighlightBg)
+            .background(Accent)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    ) {
+        Text(
+            text = "总计 $total",
+            color = TextOnLight,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+/**
+ * 单个分类计数 Chip。
+ *
+ * 格式始终为「{type.displayName}{count}」（如「远景0」「近景2」）。
+ * - count=0：[TextSecondary] 文字 + 透明背景（弱化但可见）
+ * - count>0：[Accent] 文字 + [HighlightBg] 背景（强调）
+ */
+@Composable
+private fun PhotoTypeCountChip(type: PhotoType, count: Int) {
+    val text = "${type.displayName}$count"
+    val bgColor = if (count > 0) HighlightBg else Color.Transparent
+    val textColor = if (count > 0) Accent else TextSecondary
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(bgColor)
             .padding(horizontal = 6.dp, vertical = 2.dp),
     ) {
         Text(
             text = text,
-            color = Accent,
+            color = textColor,
             fontSize = 11.sp,
         )
     }

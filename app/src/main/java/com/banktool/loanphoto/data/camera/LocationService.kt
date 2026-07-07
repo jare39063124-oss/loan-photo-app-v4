@@ -6,9 +6,14 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
@@ -19,8 +24,6 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -41,11 +44,12 @@ data class LocationResult(
 )
 
 /**
- * 位置服务封装：基于 [FusedLocationProviderClient]。
+ * 位置服务封装：优先 [FusedLocationProviderClient]（GMS 可用时），否则回退 [LocationManager]。
  *
  * - 调用方需先确保已授予 ACCESS_FINE_LOCATION / ACCESS_COARSE_LOCATION 权限
  * - 5 分钟位置缓存，避免每张照片都触发系统定位
  * - Geocoder 反向地理编码失败时回退为 "lat,lng" 字符串
+ * - 定位失败时返回 null（不返回伪造坐标）；null 不缓存，下次调用会重试
  *
  * 注意：[getCurrentLocation] 标注 [SuppressLint] 是因为调用方已负责权限校验，
  * 此处仅做兜底检查。
@@ -59,18 +63,19 @@ class LocationService @Inject constructor(
         LocationServices.getFusedLocationProviderClient(context)
     }
 
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-
     @Volatile
     private var cached: LocationResult? = null
 
     /**
      * 获取当前位置。优先返回缓存（5 分钟内）。
      *
-     * 调用前需确认已拥有位置权限；否则返回默认位置（北京坐标 + "未知位置"）。
+     * - GMS 可用时走 [FusedLocationProviderClient]
+     * - GMS 不可用时走 [LocationManager] 兜底
+     * - 无权限/超时/异常时返回 null（不返回伪造坐标）
+     * - null 不缓存，下次调用会重试
      */
     @SuppressLint("MissingPermission")
-    suspend fun getCurrentLocation(): LocationResult = withContext(Dispatchers.IO) {
+    suspend fun getCurrentLocation(): LocationResult? = withContext(Dispatchers.IO) {
         cached?.let { c ->
             val age = System.currentTimeMillis() - c.timestamp
             if (age in 0..CACHE_TTL_MS) {
@@ -80,31 +85,37 @@ class LocationService @Inject constructor(
         }
 
         if (!hasLocationPermission()) {
-            Timber.w("LocationService 无位置权限，返回默认位置")
-            return@withContext defaultLocation()
+            Timber.w("LocationService 无位置权限，返回 null")
+            return@withContext null
         }
 
         val location: Location? = try {
             withTimeoutOrNull(LOCATION_TIMEOUT_MS) {
-                awaitLocation()
+                if (isGmsAvailable()) {
+                    Timber.d("LocationService 使用 GMS FusedLocation")
+                    awaitLocation()
+                } else {
+                    Timber.d("LocationService GMS 不可用，使用 LocationManager 兜底")
+                    awaitLocationViaLocationManager()
+                }
             }
         } catch (e: Exception) {
             Timber.w(e, "LocationService 获取位置失败")
             null
         }
 
-        val result = if (location != null) {
-            val addr = reverseGeocode(location.latitude, location.longitude)
-            LocationResult(
-                lat = location.latitude,
-                lng = location.longitude,
-                address = addr,
-                timestamp = System.currentTimeMillis(),
-            )
-        } else {
-            defaultLocation()
+        if (location == null) {
+            Timber.w("LocationService 位置获取为 null（超时或无可用 provider），不缓存")
+            return@withContext null
         }
 
+        val addr = reverseGeocode(location.latitude, location.longitude)
+        val result = LocationResult(
+            lat = location.latitude,
+            lng = location.longitude,
+            address = addr,
+            timestamp = System.currentTimeMillis(),
+        )
         cached = result
         result
     }
@@ -136,13 +147,11 @@ class LocationService @Inject constructor(
                 ?: formatLatlng(lat, lng)
         }
 
-    /** 失败兜底：默认位置（0,0 + "未知位置"）。 */
-    private fun defaultLocation(): LocationResult = LocationResult(
-        lat = 0.0,
-        lng = 0.0,
-        address = "未知位置",
-        timestamp = System.currentTimeMillis(),
-    )
+    /** 检查 Google Play Services 是否可用。 */
+    private fun isGmsAvailable(): Boolean {
+        return GoogleApiAvailability.getInstance()
+            .isGooglePlayServicesAvailable(context) == ConnectionResult.SUCCESS
+    }
 
     /**
      * 把 FusedLocation 的 Task 转为 suspend。
@@ -161,6 +170,40 @@ class LocationService @Inject constructor(
                 cont.resume(if (t.isSuccessful) t.result else null)
             }
         })
+    }
+
+    /**
+     * LocationManager 兜底定位（GMS 不可用时使用）。
+     *
+     * - 优先 GPS_PROVIDER，其次 NETWORK_PROVIDER
+     * - 单次更新，获取到位置后立即移除监听
+     * - 无可用 provider 或 SecurityException 时返回 null
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun awaitLocationViaLocationManager(): Location? = withContext(Dispatchers.IO) {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .filter { lm.isProviderEnabled(it) }
+        if (providers.isEmpty()) return@withContext null
+        suspendCancellableCoroutine { cont ->
+            val provider = providers.first()
+            val listener = object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    lm.removeUpdates(this)
+                    if (cont.isActive) cont.resume(location)
+                }
+                override fun onProviderDisabled(provider: String) {}
+                override fun onProviderEnabled(provider: String) {}
+                @Suppress("DEPRECATION")
+                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+            }
+            try {
+                lm.requestSingleUpdate(provider, listener, Looper.getMainLooper())
+            } catch (e: SecurityException) {
+                if (cont.isActive) cont.resume(null)
+            }
+            cont.invokeOnCancellation { runCatching { lm.removeUpdates(listener) } }
+        }
     }
 
     private fun formatLatlng(lat: Double, lng: Double): String =
@@ -183,6 +226,6 @@ class LocationService @Inject constructor(
 
     private companion object {
         const val CACHE_TTL_MS = 5L * 60 * 1000 // 5 分钟
-        const val LOCATION_TIMEOUT_MS = 8000L // 8 秒超时
+        const val LOCATION_TIMEOUT_MS = 15000L // 15 秒超时
     }
 }

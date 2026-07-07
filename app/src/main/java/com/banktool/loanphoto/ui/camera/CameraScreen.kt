@@ -31,6 +31,8 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -76,6 +78,7 @@ fun CameraScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
 
     // 初始化（仅一次）
     LaunchedEffect(rows, excelUri) {
@@ -84,10 +87,26 @@ fun CameraScreen(
         }
     }
 
-    // 位置权限请求（在 CAMERA 之后顺带请求）
+    // 位置预热：进入相机界面立即触发一次定位（命中缓存后拍照时直接复用）
+    LaunchedEffect(Unit) {
+        viewModel.prewarmLocation()
+    }
+
+    // 定位失败时弹出 Snackbar 提示
+    LaunchedEffect(uiState.locationFailed) {
+        if (uiState.locationFailed) {
+            snackbarHostState.showSnackbar("定位失败，请检查位置权限或 GPS 开关")
+        }
+    }
+
+    // 位置权限请求（在 CAMERA 之后顺带请求）；获得授权后立即预热
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { /* 结果由 LocationService 内部兜底处理，这里不需要操作 */ }
+    ) { result ->
+        if (result.values.any { it }) {
+            viewModel.prewarmLocation()
+        }
+    }
 
     LaunchedEffect(Unit) {
         val needed = mutableListOf<String>()
@@ -167,6 +186,14 @@ fun CameraScreen(
                     .padding(bottom = 24.dp, start = 16.dp, end = 16.dp),
             )
 
+            // Snackbar：定位失败提示（悬浮于控制条上方）
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 110.dp, start = 16.dp, end = 16.dp),
+            )
+
             // 拍照中遮罩
             if (uiState.isCapturing) {
                 CapturingOverlay()
@@ -178,6 +205,7 @@ fun CameraScreen(
                     thumbnails = uiState.capturedThumbnails,
                     totalCount = uiState.totalPhotos,
                     onDismiss = viewModel::dismissGallery,
+                    customerName = uiState.primaryRow?.borrower ?: "",
                 )
             }
         }

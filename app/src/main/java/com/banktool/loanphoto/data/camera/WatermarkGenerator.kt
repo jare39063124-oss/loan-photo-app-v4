@@ -148,16 +148,14 @@ class WatermarkGenerator @Inject constructor() {
      *
      * @param sourcePath 源图片路径（用于读取 EXIF）
      * @param outputPath 输出 JPEG 路径
-     * @param lat 纬度（写入 EXIF）
-     * @param lng 经度（写入 EXIF）
+     * @param location 位置结果；为 null 时跳过 GPS EXIF 写入（仅复制原 EXIF）
      * @param config 水印配置
      * @return 输出文件路径（成功时与 outputPath 相同）
      */
     suspend fun drawAndSave(
         sourcePath: String,
         outputPath: String,
-        lat: Double,
-        lng: Double,
+        location: LocationResult?,
         config: WatermarkConfig,
     ): String? = withContext(Dispatchers.IO) {
         try {
@@ -198,8 +196,8 @@ class WatermarkGenerator @Inject constructor() {
             srcBitmap.recycle()
             if (resultBitmap !== srcBitmap) resultBitmap.recycle()
 
-            // 写入 GPS EXIF（保留原 EXIF + 追加 GPS）
-            writeGpsExif(outFile.absolutePath, sourcePath, lat, lng)
+            // 写入 GPS EXIF（保留原 EXIF + 追加 GPS；location=null 时跳过 GPS）
+            writeGpsExif(outFile.absolutePath, sourcePath, location)
 
             outFile.absolutePath
         } catch (e: Exception) {
@@ -211,31 +209,35 @@ class WatermarkGenerator @Inject constructor() {
     /**
      * 构造水印 3 段内容：拍摄日期 / 地址名 / 经纬度。
      *
+     * - location 为 null 时（定位失败），地址段和经纬度段显示「定位失败」
+     * - 拍摄日期段始终正常显示
+     *
      * @param captureTimeMillis 拍照时间毫秒
-     * @param address 地址字符串
-     * @param lat 纬度
-     * @param lng 经度
+     * @param location 位置结果；为 null 时水印显示「定位失败」
      */
     fun buildSegments(
         captureTimeMillis: Long,
-        address: String,
-        lat: Double,
-        lng: Double,
+        location: LocationResult?,
     ): List<String> {
         val dateStr = LocalDate.now().format(dateFormatter)
-        val addr = address.ifBlank { "未知位置" }
-        val latlngStr = "%.6f,%.6f".format(Locale.US, lat, lng)
-        return listOf(dateStr, addr, latlngStr)
+        return if (location != null) {
+            val addr = location.address.ifBlank { "未知位置" }
+            val latlngStr = "%.6f,%.6f".format(Locale.US, location.lat, location.lng)
+            listOf(dateStr, addr, latlngStr)
+        } else {
+            listOf(dateStr, "定位失败", "定位失败")
+        }
     }
 
     /**
      * 复制源文件 EXIF 并写入 GPS 信息到目标文件。
+     *
+     * location 为 null 时仅复制原始 EXIF，跳过 GPS 写入。
      */
     private fun writeGpsExif(
         targetPath: String,
         sourcePath: String,
-        lat: Double,
-        lng: Double,
+        location: LocationResult?,
     ) {
         try {
             val sourceExif = runCatching { ExifInterface(sourcePath) }.getOrNull()
@@ -258,13 +260,17 @@ class WatermarkGenerator @Inject constructor() {
                 }
             }
 
-            // GPS 经纬度
-            targetExif.setLatLong(lat, lng)
-            targetExif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE, "0")
-            targetExif.setAttribute(
-                ExifInterface.TAG_GPS_TIMESTAMP,
-                SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()),
-            )
+            // GPS 经纬度（location 为 null 时跳过 GPS 写入）
+            if (location != null) {
+                targetExif.setLatLong(location.lat, location.lng)
+                targetExif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE, "0")
+                targetExif.setAttribute(
+                    ExifInterface.TAG_GPS_TIMESTAMP,
+                    SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()),
+                )
+            } else {
+                Timber.d("WatermarkGenerator location=null，跳过 GPS EXIF 写入")
+            }
             targetExif.saveAttributes()
         } catch (e: Exception) {
             Timber.w(e, "WatermarkGenerator EXIF 写入失败")

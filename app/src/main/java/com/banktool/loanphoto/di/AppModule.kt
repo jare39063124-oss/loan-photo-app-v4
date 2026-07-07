@@ -1,9 +1,15 @@
 package com.banktool.loanphoto.di
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.preferencesDataStoreFile
 import com.banktool.loanphoto.data.datasource.ExcelDataSource
 import com.banktool.loanphoto.data.datasource.ExcelWriter
 import com.banktool.loanphoto.data.datasource.ProgressFileDataSource
+import com.banktool.loanphoto.data.naming.NamingConfigRepository
+import com.banktool.loanphoto.data.naming.NamingRuleGenerator
 import com.banktool.loanphoto.data.repository.CameraSessionRepositoryImpl
 import com.banktool.loanphoto.data.repository.ExcelDataIndexRepositoryImpl
 import com.banktool.loanphoto.data.repository.ExcelRepositoryImpl
@@ -27,12 +33,29 @@ import javax.inject.Singleton
  * 提供：
  * - 数据源: [ExcelDataSource]、[ProgressFileDataSource]
  * - 仓库实现: Excel / Progress / CameraSession / VisitNote / ExcelDataIndex
+ * - DataStore Preferences（命名规则配置持久化）
  *
- * 所有均 @Singleton，仓库绑定到 domain 层接口。
+ * [NamingConfigRepository] 与 [NamingRuleGenerator] 通过 @Inject constructor 自动注入，
+ * 仅需在此提供 [DataStore] 实例。所有均 @Singleton，仓库绑定到 domain 层接口。
  */
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    // ---- DataStore ----
+
+    /**
+     * 提供命名规则专用的 DataStore<Preferences>（文件名 `naming.preferences_pb`）。
+     *
+     * 与 [RecentFilesStorage] 使用的 `recent_excel_files` DataStore 相互独立，
+     * 不会产生冲突。
+     */
+    @Provides
+    @Singleton
+    fun provideDataStore(@ApplicationContext context: Context): DataStore<Preferences> =
+        PreferenceDataStoreFactory.create(
+            produceFile = { context.preferencesDataStoreFile("naming") },
+        )
 
     // ---- DataSource ----
 
