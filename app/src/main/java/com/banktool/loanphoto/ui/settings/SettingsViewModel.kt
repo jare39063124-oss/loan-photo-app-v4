@@ -2,10 +2,14 @@ package com.banktool.loanphoto.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.banktool.loanphoto.data.camera.WatermarkConfig
+import com.banktool.loanphoto.data.camera.WatermarkFontSize
+import com.banktool.loanphoto.data.camera.WatermarkPosition
 import com.banktool.loanphoto.data.naming.NameSegment
 import com.banktool.loanphoto.data.naming.NamingConfig
 import com.banktool.loanphoto.data.naming.NamingConfigRepository
 import com.banktool.loanphoto.data.naming.NamingRuleGenerator
+import com.banktool.loanphoto.data.watermark.WatermarkConfigRepository
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.PhotoType
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -23,18 +27,26 @@ import javax.inject.Inject
  * 1. 暴露命名规则配置 [namingConfig]（DataStore 持久化，实时响应）
  * 2. 提供段设置入口 [setSegment]
  * 3. 生成实时预览文件名 [previewFileName]
+ * 4. 暴露水印配置 [watermarkConfig]（DataStore 持久化，实时响应）
+ * 5. 提供水印设置入口 [setWatermarkEnabled] / [setWatermarkFontSize] /
+ *    [setWatermarkPosition] / [setWatermarkOpacity]
  *
- * 注入 [NamingConfigRepository] 与 [NamingRuleGenerator]（均 @Singleton）。
+ * 注入 [NamingConfigRepository]、[NamingRuleGenerator] 与 [WatermarkConfigRepository]（均 @Singleton）。
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val namingConfigRepository: NamingConfigRepository,
     private val namingRuleGenerator: NamingRuleGenerator,
+    private val watermarkConfigRepository: WatermarkConfigRepository,
 ) : ViewModel() {
 
     /** 命名规则配置（初始值全 NONE，订阅 DataStore 后立即更新为持久化值）。 */
     val namingConfig: StateFlow<NamingConfig> = namingConfigRepository.configFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, NamingConfig())
+
+    /** 水印配置（初始值 segments 为空，订阅 DataStore 后立即更新为持久化值）。 */
+    val watermarkConfig: StateFlow<WatermarkConfig> = watermarkConfigRepository.configFlow()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, WatermarkConfig(segments = emptyList()))
 
     /**
      * 设置某一段命名配置并持久化。
@@ -46,6 +58,26 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             namingConfigRepository.setSegment(index, segment)
         }
+    }
+
+    /** 启用 / 关闭水印。 */
+    fun setWatermarkEnabled(v: Boolean) {
+        viewModelScope.launch { watermarkConfigRepository.setEnabled(v) }
+    }
+
+    /** 设置水印字号。 */
+    fun setWatermarkFontSize(v: WatermarkFontSize) {
+        viewModelScope.launch { watermarkConfigRepository.setFontSize(v) }
+    }
+
+    /** 设置水印位置。 */
+    fun setWatermarkPosition(v: WatermarkPosition) {
+        viewModelScope.launch { watermarkConfigRepository.setPosition(v) }
+    }
+
+    /** 设置水印不透明度。 */
+    fun setWatermarkOpacity(v: Float) {
+        viewModelScope.launch { watermarkConfigRepository.setOpacity(v) }
     }
 
     /**

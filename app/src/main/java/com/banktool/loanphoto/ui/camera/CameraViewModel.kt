@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Build
 import android.provider.MediaStore
 import android.widget.Toast
+import androidx.camera.core.Camera
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.core.content.ContextCompat
@@ -15,15 +16,15 @@ import com.banktool.loanphoto.data.camera.LocationResult
 import com.banktool.loanphoto.data.camera.LocationService
 import com.banktool.loanphoto.data.camera.ThumbnailGenerator
 import com.banktool.loanphoto.data.camera.WatermarkConfig
-import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkGenerator
-import com.banktool.loanphoto.data.camera.WatermarkPosition
 import com.banktool.loanphoto.data.naming.NamingConfigRepository
 import com.banktool.loanphoto.data.naming.NamingRuleGenerator
+import com.banktool.loanphoto.data.watermark.WatermarkConfigRepository
 import com.banktool.loanphoto.domain.entity.CameraSession
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.PhotoType
 import com.banktool.loanphoto.domain.repository.CameraSessionRepository
+import com.banktool.loanphoto.domain.repository.ExcelDataIndexRepository
 import com.banktool.loanphoto.domain.repository.ProgressRepository
 import com.banktool.loanphoto.util.ProgressKeyUtil
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -31,6 +32,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -60,6 +62,9 @@ data class CameraUiState(
     val toastMessage: String? = null,
     val cameraReady: Boolean = false,
     val locationFailed: Boolean = false,
+    val zoomRatio: Float = 1f,
+    val maxZoomRatio: Float = 1f,
+    val minZoomRatio: Float = 1f,
 )
 
 /**
@@ -84,6 +89,8 @@ class CameraViewModel @Inject constructor(
     private val thumbnailGenerator: ThumbnailGenerator,
     private val namingConfigRepository: NamingConfigRepository,
     private val namingRuleGenerator: NamingRuleGenerator,
+    private val excelDataIndexRepository: ExcelDataIndexRepository,
+    private val watermarkConfigRepository: WatermarkConfigRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CameraUiState())
@@ -97,6 +104,12 @@ class CameraViewModel @Inject constructor(
 
     /** 主线程 Executor（takePicture 回调）。 */
     val mainExecutor: Executor by lazy { ContextCompat.getMainExecutor(app) }
+
+    /**
+     * 由 CameraPreviewView 绑定完成后回调注入的 [Camera] 对象。
+     * 用于读取 zoomState（min/max/当前）和控制 cameraControl.setZoomRatio。
+     */
+    private var camera: Camera? = null
 
     private val timestampFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.getDefault())
 
@@ -153,8 +166,77 @@ class CameraViewModel @Inject constructor(
         _uiState.update { it.copy(toastMessage = null) }
     }
 
-    fun onCameraReady() {
+    /**
+     * 相机绑定完成回调：保存 [Camera] 引用、读取 zoomState 初始化缩放范围、标记 cameraReady。
+     *
+     * - 读取 [Camera.cameraInfo.zoomState] 获取 minZoomRatio / maxZoomRatio / 当前 zoomRatio
+     * - minZoomRatio < 1.0 表示设备支持广角（或虚拟广角裁剪）
+     * - maxZoomRatio > 1.0 表示设备支持数字/光学变焦
+     */
+    fun onCameraReady(camera: Camera) {
+        this.camera = camera
+        updateZoomInfo(camera)
         _uiState.update { it.copy(cameraReady = true) }
+    }
+
+    /**
+     * 从 [camera.cameraInfo.zoomState] 读取缩放范围，更新 UiState。
+     *
+     * 在 [onCameraReady] 时调用一次；zoomState 是 LiveData，此处的 .value 在绑定后立即可用。
+     */
+    fun updateZoomInfo(camera: Camera) {
+        val zoomState = camera.cameraInfo.zoomState.value
+        if (zoomState != null) {
+            _uiState.update {
+                it.copy(
+                    maxZoomRatio = zoomState.maxZoomRatio,
+                    minZoomRatio = zoomState.minZoomRatio,
+                    zoomRatio = zoomState.zoomRatio,
+                )
+            }
+        }
+    }
+
+    /**
+     * 设置缩放倍率（由底部滑块或广角按钮调用）。
+     *
+     * - 调用 [Camera.cameraControl.setZoomRatio]（CameraX 异步执行）
+     * - 同时更新 UiState.zoomRatio 供 UI 即时反映
+     * - ratio 会被 clamp 到 [minZoomRatio, maxZoomRatio] 范围内
+     */
+    fun setZoom(ratio: Float) {
+        val cam = camera ?: return
+        val zoomState = cam.cameraInfo.zoomState.value
+        val minZoom = zoomState?.minZoomRatio ?: 1f
+        val maxZoom = zoomState?.maxZoomRatio ?: 1f
+        val clampedRatio = ratio.coerceIn(minZoom, maxZoom)
+        cam.cameraControl.setZoomRatio(clampedRatio)
+        _uiState.update { it.copy(zoomRatio = clampedRatio) }
+    }
+
+    /**
+     * 双指缩放回调（由 CameraPreviewView 的 detectTransformGestures 调用）。
+     *
+     * CameraPreviewView 已直接调用 cameraControl.setZoomRatio，此处仅同步 UiState。
+     */
+    fun onZoomChange(ratio: Float) {
+        _uiState.update { it.copy(zoomRatio = ratio) }
+    }
+
+    /**
+     * 切换广角 / 1x。
+     *
+     * - 当前 zoomRatio < 1.0（广角态）→ 切回 1.0x
+     * - 当前 zoomRatio >= 1.0 → 切到 minZoomRatio（如 0.5x 广角）
+     * - 设备不支持广角（minZoomRatio >= 1.0）时此方法不应被调用（UI 会隐藏按钮）
+     */
+    fun toggleWideAngle() {
+        val cam = camera ?: return
+        val zoomState = cam.cameraInfo.zoomState.value ?: return
+        val minZoom = zoomState.minZoomRatio
+        val currentZoom = _uiState.value.zoomRatio
+        val targetZoom = if (currentZoom < 1.0f) 1.0f else minZoom
+        setZoom(targetZoom)
     }
 
     /**
@@ -311,12 +393,15 @@ class CameraViewModel @Inject constructor(
                     captureTimeMillis = System.currentTimeMillis(),
                     location = location,
                 )
+                // 读取持久化水印配置（position/fontSize/opacity/enabled），
+                // segments 由本次拍照实时生成，覆盖配置中的空 segments。
+                val savedConfig = watermarkConfigRepository.configFlow().first()
                 val config = WatermarkConfig(
                     segments = segments,
-                    position = WatermarkPosition.BOTTOM_RIGHT,
-                    fontSize = WatermarkFontSize.MEDIUM,
-                    opacity = 0.7f,
-                    enabled = true,
+                    position = savedConfig.position,
+                    fontSize = savedConfig.fontSize,
+                    opacity = savedConfig.opacity,
+                    enabled = savedConfig.enabled,
                 )
 
                 // 3. 绘制水印并覆盖保存（同一路径）
@@ -361,6 +446,20 @@ class CameraViewModel @Inject constructor(
                         photoPath = savedFile.absolutePath,
                         photoType = photoType,
                     )
+                }
+
+                // 5.5 维护 excel_data_index.json：把本次写入的 progressKey 登记到索引，
+                // 供 clearData 等功能按 Excel 维度批量清理。索引失败不影响拍照主流程。
+                val md5 = _uiState.value.excelUriMd5
+                if (md5.isNotBlank()) {
+                    try {
+                        excelDataIndexRepository.addProgressKey(md5, primaryKey)
+                        for (k in otherKeys) {
+                            excelDataIndexRepository.addProgressKey(md5, k)
+                        }
+                    } catch (e: Exception) {
+                        Timber.w(e, "addProgressKey 失败")
+                    }
                 }
 
                 // 6. UI 更新

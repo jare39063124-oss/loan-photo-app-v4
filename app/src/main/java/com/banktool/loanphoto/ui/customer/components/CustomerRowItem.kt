@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
@@ -42,6 +41,7 @@ import com.banktool.loanphoto.domain.entity.PhotoType
 import com.banktool.loanphoto.ui.theme.Accent
 import com.banktool.loanphoto.ui.theme.Card as CardColor
 import com.banktool.loanphoto.ui.theme.HighlightBg
+import com.banktool.loanphoto.ui.theme.PhotoDoneBg
 import com.banktool.loanphoto.ui.theme.TextOnLight
 import com.banktool.loanphoto.ui.theme.TextSecondary
 import com.banktool.loanphoto.ui.theme.Warning
@@ -49,12 +49,11 @@ import com.banktool.loanphoto.ui.theme.Warning
 /**
  * 客户清单中的单行卡片。
  *
- * v4.0.2 布局：
- * - [Checkbox] 单行选择
- * - 左侧竖版操作列（宽 48dp）：PhotoCountBadge + 拍照 + 查看已拍（始终显示）+ 编辑备注
- * - 右侧文本列（weight=1f）：[序号] 借款人名 / 地址 / 性质+备注 / 全量分类计数
+ * v4.0.3 布局：
+ * - 顶部行：[Checkbox] + 文本列（[序号] 借款人名 / 地址 / 性质+备注）+ 最右侧竖向操作按钮（拍照 / 查看已拍 / 编辑备注）
+ * - 底部计数行：全量分类计数（[PhotoTypeCountRow]），左边缘对齐 Checkbox
  *
- * 选中时背景为 [HighlightBg]，未选中为 [CardColor]（白色）。
+ * 选中时背景为 [HighlightBg]，有照片时为 [PhotoDoneBg]（浅绿），其余为 [CardColor]（白色）。
  * 被标记为同类型代表性户型时显示星标。
  * 长按弹出菜单（[RowLongPressMenu]）。
  *
@@ -83,7 +82,11 @@ fun CustomerRowItem(
     onEditRemark: () -> Unit,
     onLongClick: () -> Unit = {},
 ) {
-    val containerColor = if (isSelected) HighlightBg else CardColor
+    val containerColor = when {
+        isSelected -> HighlightBg
+        photoCount > 0 -> PhotoDoneBg
+        else -> CardColor
+    }
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -96,153 +99,140 @@ fun CustomerRowItem(
         colors = CardDefaults.cardColors(containerColor = containerColor),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
-            Checkbox(
-                checked = isSelected,
-                onCheckedChange = { onSelectionToggle() },
-                colors = CheckboxDefaults.colors(
-                    checkedColor = Accent,
-                    uncheckedColor = TextSecondary,
-                ),
-            )
-
-            Spacer(modifier = Modifier.width(4.dp))
-
-            // 左侧竖版操作列（宽 48dp）：Badge + 拍照 + 查看已拍 + 备注
-            Column(
-                modifier = Modifier.width(48.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                PhotoCountBadge(photoCount = photoCount)
-
-                IconButton(onClick = onTakePhoto) {
-                    Icon(
-                        imageVector = Icons.Filled.CameraAlt,
-                        contentDescription = "拍照",
-                        tint = Accent,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-
-                // 查看已拍按钮：始终显示（即使 photoCount=0）
-                IconButton(onClick = onViewPhotos) {
-                    Icon(
-                        imageVector = Icons.Filled.Photo,
-                        contentDescription = "查看已拍",
-                        tint = Accent,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-
-                IconButton(onClick = onEditRemark) {
-                    Icon(
-                        imageVector = Icons.Filled.Edit,
-                        contentDescription = "编辑备注",
-                        tint = TextSecondary,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
-            }
-
-            // 右侧文本列
-            Column(
+        Column {
+            Row(
                 modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.Top,
             ) {
-                // 第一行：[序号] 借款人名 + 同类型标记星标
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (row.serial.isNotBlank()) {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = { onSelectionToggle() },
+                    colors = CheckboxDefaults.colors(
+                        checkedColor = Accent,
+                        uncheckedColor = TextSecondary,
+                    ),
+                )
+
+                Spacer(modifier = Modifier.width(4.dp))
+
+                // 文本列：序号/借款人/地址/性质备注（不再包含 PhotoTypeCountRow）
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                ) {
+                    // 第一行：[序号] 借款人名 + 同类型标记星标
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (row.serial.isNotBlank()) {
+                            Text(
+                                text = "[${row.serial}]",
+                                color = Accent,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
                         Text(
-                            text = "[${row.serial}]",
+                            text = row.borrower.ifBlank { "未命名客户" },
                             color = Accent,
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        if (isBatchMarked) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.Filled.Star,
+                                contentDescription = "同类型代表性户型",
+                                tint = Warning,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
                     }
-                    Text(
-                        text = row.borrower.ifBlank { "未命名客户" },
-                        color = Accent,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    if (isBatchMarked) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            imageVector = Icons.Filled.Star,
-                            contentDescription = "同类型代表性户型",
-                            tint = Warning,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                }
 
-                Spacer(modifier = Modifier.size(2.dp))
-
-                // 第二行：地址概 + 地址详
-                val address = listOf(row.addrGeneral, row.addrDetail)
-                    .filter { it.isNotBlank() }
-                    .joinToString(" ")
-                if (address.isNotBlank()) {
-                    Text(
-                        text = address,
-                        color = TextSecondary,
-                        fontSize = 14.sp,
-                    )
                     Spacer(modifier = Modifier.size(2.dp))
+
+                    // 第二行：地址概 + 地址详
+                    val address = listOf(row.addrGeneral, row.addrDetail)
+                        .filter { it.isNotBlank() }
+                        .joinToString(" ")
+                    if (address.isNotBlank()) {
+                        Text(
+                            text = address,
+                            color = TextSecondary,
+                            fontSize = 14.sp,
+                        )
+                        Spacer(modifier = Modifier.size(2.dp))
+                    }
+
+                    // 第三行：性质 + 备注
+                    val meta = listOf(row.propertyType, row.remark)
+                        .filter { it.isNotBlank() }
+                        .joinToString("  |  ")
+                    if (meta.isNotBlank()) {
+                        Text(
+                            text = meta,
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                        )
+                    }
                 }
 
-                // 第三行：性质 + 备注
-                val meta = listOf(row.propertyType, row.remark)
-                    .filter { it.isNotBlank() }
-                    .joinToString("  |  ")
-                if (meta.isNotBlank()) {
-                    Text(
-                        text = meta,
-                        color = TextSecondary,
-                        fontSize = 12.sp,
-                    )
-                }
+                // 最右侧操作按钮（竖向排列）
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    IconButton(
+                        onClick = onTakePhoto,
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.CameraAlt,
+                            contentDescription = "拍照",
+                            tint = Accent,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
 
-                // 第四行：全量分类计数（始终展示全部 5 类 + 总计）
-                Spacer(modifier = Modifier.size(4.dp))
-                PhotoTypeCountRow(
-                    typeCounts = photoTypeCounts,
-                    totalCount = photoCount,
-                )
+                    // 查看已拍按钮：始终显示（即使 photoCount=0）
+                    IconButton(
+                        onClick = onViewPhotos,
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Photo,
+                            contentDescription = "查看已拍",
+                            tint = Accent,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onEditRemark,
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Edit,
+                            contentDescription = "编辑备注",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
             }
-        }
-    }
-}
 
-/**
- * 圆形照片数 Badge：[Accent] 背景，[TextOnLight] 文字。
- */
-@Composable
-private fun PhotoCountBadge(photoCount: Int) {
-    Box(
-        modifier = Modifier
-            .size(28.dp)
-            .clip(CircleShape)
-            .background(Accent),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = photoCount.toString(),
-            color = TextOnLight,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-        )
+            // 底部计数行，左对齐 Checkbox 左边缘（Card padding 8 + Row padding 8 = 16dp）
+            PhotoTypeCountRow(
+                totalCount = photoCount,
+                typeCounts = photoTypeCounts,
+                modifier = Modifier.padding(start = 16.dp, end = 8.dp, bottom = 8.dp),
+            )
+        }
     }
 }
 
@@ -258,11 +248,17 @@ private fun PhotoCountBadge(photoCount: Int) {
  *
  * @param typeCounts 各分类计数
  * @param totalCount 总照片数（用于「总计」chip）
+ * @param modifier 外部传入的修饰符（用于控制对齐与 padding）
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PhotoTypeCountRow(typeCounts: Map<PhotoType, Int>, totalCount: Int) {
+private fun PhotoTypeCountRow(
+    typeCounts: Map<PhotoType, Int>,
+    totalCount: Int,
+    modifier: Modifier = Modifier,
+) {
     FlowRow(
+        modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {

@@ -15,10 +15,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -45,9 +47,11 @@ import com.banktool.loanphoto.ui.theme.TextSecondary
  * - 文件名
  * - 数据指示器（绿点=有数据 / 灰点=无数据）
  * - "有数据 N 项" 或 "无数据"
+ * - 移除按钮（清理失效或不需要的记录）
  *
  * @param recentFiles 最近文件列表（已含数据指示信息）
  * @param onFileSelected 选中某文件，参数为 uri
+ * @param onRemoveFile 移除某文件记录，参数为 uri
  * @param onDismiss 关闭 BottomSheet
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -55,6 +59,7 @@ import com.banktool.loanphoto.ui.theme.TextSecondary
 fun RecentFilesBottomSheet(
     recentFiles: List<RecentFileItem>,
     onFileSelected: (String) -> Unit,
+    onRemoveFile: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -93,6 +98,7 @@ fun RecentFilesBottomSheet(
                         RecentFileRow(
                             item = item,
                             onClick = { onFileSelected(item.uri) },
+                            onRemove = { onRemoveFile(item.uri) },
                         )
                         HorizontalDivider(
                             modifier = Modifier.padding(horizontal = 16.dp),
@@ -110,6 +116,7 @@ fun RecentFilesBottomSheet(
 private fun RecentFileRow(
     item: RecentFileItem,
     onClick: () -> Unit,
+    onRemove: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -147,5 +154,17 @@ private fun RecentFileRow(
                 .clip(CircleShape)
                 .background(if (item.hasData) Success else Divider),
         )
+        Spacer(modifier = Modifier.width(8.dp))
+        // 移除按钮
+        IconButton(
+            onClick = onRemove,
+            modifier = Modifier.size(32.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "移除",
+                tint = TextSecondary,
+            )
+        }
     }
 }

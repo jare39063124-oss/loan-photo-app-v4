@@ -78,8 +78,10 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideExcelRepository(ds: ExcelDataSource): ExcelRepository =
-        ExcelRepositoryImpl(ds)
+    fun provideExcelRepository(
+        ds: ExcelDataSource,
+        excelWriter: ExcelWriter,
+    ): ExcelRepository = ExcelRepositoryImpl(ds, excelWriter)
 
     @Provides
     @Singleton

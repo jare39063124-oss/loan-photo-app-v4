@@ -19,3 +19,4 @@ val Success = Color(0xFF4CAF50)       // 成功绿
 val Warning = Color(0xFFFF9800)       // 警告橙
 val Error = Color(0xFFF44336)         // 错误红
 val Divider = Color(0xFFE0E0E0)       // 分割线
+val PhotoDoneBg = Color(0xFFC8E6C9)   // 已拍摄条目浅绿背景（Material Green 100，加深以提升对比度）

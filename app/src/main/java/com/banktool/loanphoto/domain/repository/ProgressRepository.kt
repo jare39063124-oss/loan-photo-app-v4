@@ -33,6 +33,13 @@ interface ProgressRepository {
      */
     suspend fun getAllProgress(): Map<String, PhotoRecord>
 
+    /**
+     * 获取 progress.json 中全部 progressKey（用于 clearData 兜底，不依赖 excel_data_index.json）。
+     *
+     * 返回除 `_row_remarks` 和 `batch_marked` 两个内部字段外的所有 key。
+     */
+    suspend fun getAllProgressKeys(): List<String>
+
     // ---- 行级备注 ----
 
     /** 行级备注 Map，key=行号字符串。 */

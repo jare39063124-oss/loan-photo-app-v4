@@ -98,32 +98,56 @@ class WatermarkGenerator @Inject constructor() {
         if (width <= 0 || height <= 0) return working
 
         val scale = width / BASE_WIDTH
-        val fontPx = (fontSize.sizePx * scale).toInt().coerceAtLeast(MIN_FONT_PX)
+        val marginPx = (width * EDGE_MARGIN_RATIO).toInt().coerceAtLeast(1)
+        val maxBlockWidth = (width * MAX_BLOCK_WIDTH_RATIO).toInt()
         val padPx = (PADDING_PX * scale).toInt().coerceAtLeast(1)
-        val lineHeight = fontPx + LINE_GAP_PX
+        val lineGapPx = (LINE_GAP_PX * scale).toInt()
 
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
-            textSize = fontPx.toFloat()
             typeface = Typeface.DEFAULT_BOLD
-            alpha = (255 * opacity.coerceIn(0f, 1f)).toInt()
         }
 
         val bgPaint = Paint().apply {
             color = Color.BLACK
-            alpha = (255 * BG_OPACITY_RATIO * opacity.coerceIn(0f, 1f)).toInt()
         }
 
-        // 测量最长行宽度
-        val maxTextWidth = segments.maxOf { textPaint.measureText(it).toInt() }
-        val blockWidth = maxTextWidth + padPx * 2
-        val blockHeight = lineHeight * segments.size + padPx * 2
+        // 自适应字号：初始按档位缩放，若水印块超 85% 图片宽度则循环缩小字号直至适配
+        var fontPx = (fontSize.sizePx * scale).toInt().coerceAtLeast(MIN_FONT_PX)
+        var maxTextWidth: Int
+        var blockWidth: Int
+        var blockHeight: Int
+        var lineHeight: Int
+        while (true) {
+            textPaint.textSize = fontPx.toFloat()
+            textPaint.alpha = (255 * opacity.coerceIn(0f, 1f)).toInt()
+            bgPaint.alpha = (255 * BG_OPACITY_RATIO * opacity.coerceIn(0f, 1f)).toInt()
+            lineHeight = fontPx + lineGapPx
+            maxTextWidth = segments.maxOf { textPaint.measureText(it).toInt() }
+            blockWidth = maxTextWidth + padPx * 2
+            blockHeight = lineHeight * segments.size + padPx * 2
+            if (blockWidth <= maxBlockWidth || fontPx <= MIN_FONT_PX) break
+            fontPx = (fontPx * 0.9f).toInt().coerceAtLeast(MIN_FONT_PX)
+        }
 
+        // 位置计算：距边缘留 3% 空隙，并钳制不低于 marginPx（防止负坐标导致裁切）
         val (left, top) = when (position) {
-            WatermarkPosition.BOTTOM_RIGHT -> Pair(width - blockWidth, height - blockHeight)
-            WatermarkPosition.BOTTOM_LEFT -> Pair(0, height - blockHeight)
-            WatermarkPosition.TOP_RIGHT -> Pair(width - blockWidth, 0)
-            WatermarkPosition.TOP_LEFT -> Pair(0, 0)
+            WatermarkPosition.BOTTOM_RIGHT -> Pair(
+                (width - blockWidth - marginPx).coerceAtLeast(marginPx),
+                (height - blockHeight - marginPx).coerceAtLeast(marginPx),
+            )
+            WatermarkPosition.BOTTOM_LEFT -> Pair(
+                marginPx,
+                (height - blockHeight - marginPx).coerceAtLeast(marginPx),
+            )
+            WatermarkPosition.TOP_RIGHT -> Pair(
+                (width - blockWidth - marginPx).coerceAtLeast(marginPx),
+                marginPx,
+            )
+            WatermarkPosition.TOP_LEFT -> Pair(
+                marginPx,
+                marginPx,
+            )
         }
 
         // 背景半透明框
@@ -284,5 +308,7 @@ class WatermarkGenerator @Inject constructor() {
         const val LINE_GAP_PX = 12
         const val BG_OPACITY_RATIO = 0.55f
         const val JPEG_QUALITY = 92
+        const val EDGE_MARGIN_RATIO = 0.03f // 水印距图片边缘 3% 空隙
+        const val MAX_BLOCK_WIDTH_RATIO = 0.85f // 水印块最大占图片宽度 85%，超出则自动缩字号
     }
 }

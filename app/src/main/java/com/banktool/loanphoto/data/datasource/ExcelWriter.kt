@@ -102,6 +102,66 @@ class ExcelWriter @Inject constructor(
         }
 
     /**
+     * 在 Excel 末尾追加一行查勘条目（不覆盖原有内容）。
+     *
+     * 列映射：A=serial, B=borrower, C=address, D/E/F 留空。
+     *
+     * @param uri Excel 文件 content URI
+     * @param serial 序号
+     * @param borrower 借款人
+     * @param address 地址（写入 C 列）
+     * @return 新行的物理行号（0-based，sheet 行号）；-1 表示失败
+     */
+    suspend fun appendRowToExcel(uri: Uri, serial: String, borrower: String, address: String): Int =
+        withContext(Dispatchers.IO) {
+            try {
+                val resolver = context.contentResolver
+                val workbook = resolver.openInputStream(uri)?.use { input ->
+                    XSSFWorkbook(input)
+                } ?: run {
+                    Timber.w("ExcelWriter appendRow: openInputStream 返回 null, uri=%s", uri)
+                    return@withContext -1
+                }
+
+                workbook.use { wb ->
+                    val sheet = wb.getSheetAt(0) ?: run {
+                        Timber.w("ExcelWriter appendRow: 工作簿无工作表")
+                        return@withContext -1
+                    }
+
+                    // 在末尾追加一行（getLastRowNum 返回最后有数据的行号，0-based；新行 = lastRowNum + 1）
+                    // 注意：若 sheet 为空（lastRowNum=-1），新行=0；若有表头+数据，新行=lastRowNum+1
+                    val newRowNum = sheet.lastRowNum + 1
+                    val newRow = sheet.createRow(newRowNum)
+                    newRow.createCell(0).setCellValue(serial) // A 列 序号
+                    newRow.createCell(1).setCellValue(borrower) // B 列 借款人
+                    newRow.createCell(2).setCellValue(address) // C 列 地址概
+                    // D/E/F 列不创建（留空）
+
+                    Timber.i("ExcelWriter appendRow: 追加行 #%d, serial=%s, borrower=%s", newRowNum, serial, borrower)
+
+                    // 原子写
+                    val bytes = ByteArrayOutputStream().use { baos ->
+                        wb.write(baos)
+                        baos.toByteArray()
+                    }
+                    resolver.openOutputStream(uri, "wt")?.use { output ->
+                        output.write(bytes)
+                        output.flush()
+                    } ?: run {
+                        Timber.w("ExcelWriter appendRow: openOutputStream 返回 null")
+                        return@withContext -1
+                    }
+
+                    newRowNum
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "ExcelWriter appendRow: 追加失败, uri=%s", uri)
+                -1
+            }
+        }
+
+    /**
      * 检测数据起始行：若第 1 行像表头则返回 1，否则返回 0。
      * 与 [ExcelDataSource.parseHeader] 逻辑对齐，但仅判断是否为表头。
      */

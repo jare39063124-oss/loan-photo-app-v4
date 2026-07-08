@@ -27,13 +27,18 @@ class NamingConfigRepository @Inject constructor(
 
     /**
      * 暴露命名配置 [Flow]，供 Composable collectAsState 实时响应变更。
+     *
+     * DataStore 中未持久化的段（prefs[key] 为 null）回退到 [NamingConfig] 的默认值
+     * （v4.0.3 起 `[DATE, BORROWER, ADDRESS, NONE]`），而非 [NameSegment.NONE]。
+     * 已持久化的段（用户在设置页配置过）优先使用持久化值，保证向后兼容。
      */
     fun configFlow(): Flow<NamingConfig> = dataStore.data.map { prefs ->
+        val default = NamingConfig()
         NamingConfig(
-            segment1 = NameSegment.fromName(prefs[KEY_SEGMENT_1]),
-            segment2 = NameSegment.fromName(prefs[KEY_SEGMENT_2]),
-            segment3 = NameSegment.fromName(prefs[KEY_SEGMENT_3]),
-            segment4 = NameSegment.fromName(prefs[KEY_SEGMENT_4]),
+            segment1 = prefs[KEY_SEGMENT_1]?.let { NameSegment.fromName(it) } ?: default.segment1,
+            segment2 = prefs[KEY_SEGMENT_2]?.let { NameSegment.fromName(it) } ?: default.segment2,
+            segment3 = prefs[KEY_SEGMENT_3]?.let { NameSegment.fromName(it) } ?: default.segment3,
+            segment4 = prefs[KEY_SEGMENT_4]?.let { NameSegment.fromName(it) } ?: default.segment4,
         )
     }
 

@@ -103,6 +103,14 @@ class ProgressRepositoryImpl @Inject constructor(
             }
         }
 
+    override suspend fun getAllProgressKeys(): List<String> =
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                val fileMap = dataSource.load()
+                fileMap.keys.filter { it != KEY_ROW_REMARKS && it != KEY_BATCH_MARKED }
+            }
+        }
+
     // ---- 行级备注 ----
 
     override suspend fun getRowRemarks(): Map<String, String> =

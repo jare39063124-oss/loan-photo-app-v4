@@ -31,6 +31,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -144,7 +145,8 @@ fun CameraScreen(
             // 相机预览
             CameraPreviewView(
                 imageCapture = viewModel.imageCapture,
-                onCameraReady = { viewModel.onCameraReady() },
+                onCameraReady = { camera -> viewModel.onCameraReady(camera) },
+                onZoomChange = { ratio -> viewModel.onZoomChange(ratio) },
                 modifier = Modifier.fillMaxSize(),
             )
 
@@ -170,28 +172,46 @@ fun CameraScreen(
                     .padding(top = 96.dp, start = 12.dp),
             )
 
-            // 底部: 控制条
-            BottomControlBar(
-                isCapturing = uiState.isCapturing,
-                sessionCount = uiState.photosThisSession,
-                onClose = {
-                    viewModel.onExitCamera()
-                    onClose()
-                },
-                onCapture = { viewModel.takePhoto() },
-                onShowGallery = { viewModel.openGallery() },
+            // 底部: 缩放控制 + 控制条（Column 垂直排列）
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 24.dp, start = 16.dp, end = 16.dp),
-            )
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                // 缩放控制条（仅在设备支持缩放或广角时显示）
+                val showZoomControls = uiState.maxZoomRatio > 1.0f || uiState.minZoomRatio < 1.0f
+                if (showZoomControls) {
+                    ZoomControlBar(
+                        zoomRatio = uiState.zoomRatio,
+                        maxZoomRatio = uiState.maxZoomRatio,
+                        minZoomRatio = uiState.minZoomRatio,
+                        onZoomChange = viewModel::setZoom,
+                        onToggleWideAngle = viewModel::toggleWideAngle,
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
 
-            // Snackbar：定位失败提示（悬浮于控制条上方）
+                BottomControlBar(
+                    isCapturing = uiState.isCapturing,
+                    sessionCount = uiState.photosThisSession,
+                    onClose = {
+                        viewModel.onExitCamera()
+                        onClose()
+                    },
+                    onCapture = { viewModel.takePhoto() },
+                    onShowGallery = { viewModel.openGallery() },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            // Snackbar：定位失败提示（悬浮于控制条上方，含缩放条时抬高避免重叠）
             SnackbarHost(
                 hostState = snackbarHostState,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 110.dp, start = 16.dp, end = 16.dp),
+                    .padding(bottom = 165.dp, start = 16.dp, end = 16.dp),
             )
 
             // 拍照中遮罩
@@ -287,6 +307,69 @@ private fun CustomerInfoPill(
                 text = summary,
                 color = Color(0xFFE0E0E0),
                 fontSize = 11.sp,
+            )
+        }
+    }
+}
+
+/**
+ * 缩放控制条：广角切换按钮 + 缩放滑块 + 倍率显示。
+ *
+ * - [minZoomRatio] < 1.0 时显示广角按钮（点击在 0.5x / 1x 间切换）
+ * - [maxZoomRatio] > 1.0 时显示滑块（范围 1.0 ~ maxZoomRatio）
+ * - 滑块值会被 clamp 到 [1.0, maxZoomRatio]；广角态（zoom < 1.0）时滑块显示在 1.0 位置
+ * - 两者均不满足时整个 [ZoomControlBar] 不应被调用（由父 Composable 判断）
+ */
+@Composable
+private fun ZoomControlBar(
+    zoomRatio: Float,
+    maxZoomRatio: Float,
+    minZoomRatio: Float,
+    onZoomChange: (Float) -> Unit,
+    onToggleWideAngle: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val hasZoom = maxZoomRatio > 1.0f
+    val hasWideAngle = minZoomRatio < 1.0f
+    val isWideAngleActive = zoomRatio < 1.0f
+
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = if (hasZoom) Arrangement.spacedBy(12.dp) else Arrangement.Center,
+    ) {
+        // 广角切换按钮（仅当设备支持广角时显示）
+        if (hasWideAngle) {
+            Surface(
+                shape = CircleShape,
+                color = if (isWideAngleActive) Accent else Color(0xCC404040),
+                modifier = Modifier.size(44.dp),
+            ) {
+                IconButton(onClick = onToggleWideAngle) {
+                    Text(
+                        text = ".5",
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+        }
+
+        // 缩放滑块（仅当设备支持变焦时显示）
+        if (hasZoom) {
+            Slider(
+                value = zoomRatio.coerceIn(1.0f, maxZoomRatio),
+                onValueChange = onZoomChange,
+                valueRange = 1.0f..maxZoomRatio,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "%.1fx".format(zoomRatio),
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.width(44.dp),
             )
         }
     }

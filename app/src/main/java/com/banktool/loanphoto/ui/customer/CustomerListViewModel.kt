@@ -1,5 +1,6 @@
 package com.banktool.loanphoto.ui.customer
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.banktool.loanphoto.domain.entity.CustomerRow
@@ -13,6 +14,7 @@ import com.banktool.loanphoto.ui.customer.data.RecentFilesStorage
 import com.banktool.loanphoto.util.ProgressKeyUtil
 import com.banktool.loanphoto.util.SortUtil
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,6 +51,7 @@ data class RecentFileItem(
  */
 @HiltViewModel
 class CustomerListViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val excelRepository: ExcelRepository,
     private val progressRepository: ProgressRepository,
     private val excelDataIndexRepository: ExcelDataIndexRepository,
@@ -165,10 +168,41 @@ class CustomerListViewModel @Inject constructor(
 
     /**
      * 从最近文件直接加载（uri 已知，文件名从最近列表取）。
+     *
+     * 加载前校验 SAF 持久化 URI 读权限是否仍然有效，失效时移除最近记录并提示用户重新导入。
      */
     fun loadFromRecent(uri: String) {
+        // 检查 URI 权限是否有效
+        val hasPermission = runCatching {
+            val parsed = android.net.Uri.parse(uri)
+            context.contentResolver.persistedUriPermissions.any {
+                it.uri == parsed && it.isReadPermission
+            }
+        }.getOrDefault(false)
+
+        if (!hasPermission) {
+            viewModelScope.launch {
+                recentFilesStorage.removeRecent(uri)
+                _uiState.update {
+                    it.copy(message = "文件权限已失效，请重新导入Excel文件")
+                }
+                loadRecentFiles()
+            }
+            return
+        }
+
         val fileName = _uiState.value.recentFiles.firstOrNull { it.uri == uri }?.fileName ?: ""
         loadExcel(uri, fileName)
+    }
+
+    /**
+     * 移除一条最近文件记录（用于用户主动清理或权限失效场景）。
+     */
+    fun removeRecentFile(uri: String) {
+        viewModelScope.launch {
+            recentFilesStorage.removeRecent(uri)
+            loadRecentFiles()
+        }
     }
 
     /**
@@ -181,7 +215,7 @@ class CustomerListViewModel @Inject constructor(
      */
     fun onSearchQueryChange(query: String) {
         _uiState.update { current ->
-            val filtered = filterRows(current.rows, query, current.searchField, current.rowRemarks)
+            val filtered = filterRows(current.rows, query, current.searchField, current.rowRemarks, current.photoCounts)
             current.copy(searchQuery = query, filteredIndices = filtered)
         }
     }
@@ -191,7 +225,7 @@ class CustomerListViewModel @Inject constructor(
      */
     fun onSearchFieldChange(field: SearchField) {
         _uiState.update { current ->
-            val filtered = filterRows(current.rows, current.searchQuery, field, current.rowRemarks)
+            val filtered = filterRows(current.rows, current.searchQuery, field, current.rowRemarks, current.photoCounts)
             current.copy(searchField = field, filteredIndices = filtered)
         }
     }
@@ -242,12 +276,14 @@ class CustomerListViewModel @Inject constructor(
                 val rowRemarks = progressRepository.getRowRemarks()
                 val batchMarkedKeys = progressRepository.getBatchMarkedKeys()
                 _uiState.update {
+                    val filtered = filterRows(it.rows, it.searchQuery, it.searchField, rowRemarks, stats.counts)
                     it.copy(
                         photoCounts = stats.counts,
                         photoTypeCounts = stats.typeCounts,
                         rowRemarks = rowRemarks,
                         batchMarkedKeys = batchMarkedKeys,
                         isRefreshingCounts = false,
+                        filteredIndices = filtered,
                     )
                 }
             } catch (e: Exception) {
@@ -373,6 +409,36 @@ class CustomerListViewModel @Inject constructor(
         }
     }
 
+    // ---- 添加查勘条目 ----
+
+    /**
+     * 在当前 Excel 末尾追加一行查勘条目，并刷新列表。
+     *
+     * 列映射：A=serial, B=borrower, C=address。
+     *
+     * - 成功后重新调用 [loadExcel] 拉取最新数据
+     * - 失败时通过 [UiState.error] 提示用户确认文件可写
+     */
+    fun addSurveyEntry(serial: String, borrower: String, address: String) {
+        val currentUri = uiState.value.excelUri
+        if (currentUri.isBlank()) return
+        viewModelScope.launch {
+            try {
+                val newRowIndex = excelRepository.appendRow(currentUri, serial, borrower, address)
+                if (newRowIndex >= 0) {
+                    // 重新加载 Excel 刷新列表
+                    loadExcel(currentUri, uiState.value.excelFileName)
+                    _uiState.update { it.copy(message = "已添加条目") }
+                } else {
+                    _uiState.update { it.copy(error = "添加失败：请确认文件可写") }
+                }
+            } catch (e: Exception) {
+                Timber.w(e, "添加查勘条目失败")
+                _uiState.update { it.copy(error = "添加失败：请确认文件可写") }
+            }
+        }
+    }
+
     // ---- 内部辅助 ----
 
     /**
@@ -451,20 +517,27 @@ class CustomerListViewModel @Inject constructor(
 
     /**
      * 按 [field] 和 [query] 过滤行，返回匹配的 rowIndex 列表。
-     * query 为空时返回全集。
+     * query 为空时返回全集（UNVISITED 状态过滤除外，它忽略 query）。
      *
-     * REMARK 字段查 [rowRemarks] (progress.json 的 _row_remarks[行号])。
+     * - REMARK 字段查 [rowRemarks] (progress.json 的 _row_remarks[行号])
+     * - UNVISITED 字段忽略 query，直接返回 photoCount==0 的行
      */
     private fun filterRows(
         rows: List<CustomerRow>,
         query: String,
         field: SearchField,
         rowRemarks: Map<String, String>,
+        photoCounts: Map<String, Int>,
     ): List<Int> {
+        if (field == SearchField.UNVISITED) {
+            return rows.filter { row ->
+                (photoCounts[row.progressKey] ?: 0) == 0
+            }.map { it.rowIndex }
+        }
         if (query.isBlank()) return rows.map { it.rowIndex }
         val keyword = query.trim()
         return rows.asSequence()
-            .filter { row -> matchField(row, keyword, field, rowRemarks) }
+            .filter { row -> matchField(row, keyword, field, rowRemarks, photoCounts) }
             .map { it.rowIndex }
             .toList()
     }
@@ -474,16 +547,20 @@ class CustomerListViewModel @Inject constructor(
         keyword: String,
         field: SearchField,
         rowRemarks: Map<String, String>,
+        photoCounts: Map<String, Int>,
     ): Boolean {
         return when (field) {
             SearchField.SERIAL -> row.serial.contains(keyword, ignoreCase = true)
             SearchField.BORROWER -> row.borrower.contains(keyword, ignoreCase = true)
-            SearchField.ADDR_GENERAL -> row.addrGeneral.contains(keyword, ignoreCase = true)
-            SearchField.ADDR_DETAIL -> row.addrDetail.contains(keyword, ignoreCase = true)
+            SearchField.ADDR -> row.addrGeneral.contains(keyword, ignoreCase = true) ||
+                row.addrDetail.contains(keyword, ignoreCase = true)
             SearchField.REMARK -> {
                 // 查 progress.json 的 _row_remarks[行号] 是否 contains(query)
                 val remark = rowRemarks[row.rowIndex.toString()] ?: row.remark
                 remark.contains(keyword, ignoreCase = true)
+            }
+            SearchField.UNVISITED -> {
+                (photoCounts[row.progressKey] ?: 0) == 0
             }
         }
     }

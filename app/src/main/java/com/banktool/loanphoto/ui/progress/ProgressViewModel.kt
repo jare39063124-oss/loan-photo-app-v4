@@ -192,13 +192,28 @@ class ProgressViewModel @Inject constructor(
             _uiState.update { it.copy(isClearing = true, error = null, message = null) }
             try {
                 val md5 = current.excelUriMd5
-                val progressKeys = excelDataIndexRepository.getProgressKeys(md5)
+                var progressKeys = excelDataIndexRepository.getProgressKeys(md5)
+                // 兜底：如果索引为空（addProgressKey 历史未调用或索引丢失），
+                // 直接扫描 progress.json 全量 keys，避免 clearData 静默失效。
+                if (progressKeys.isEmpty()) {
+                    progressKeys = progressRepository.getAllProgressKeys()
+                    Timber.w("excel_data_index 为空，使用 progress.json 全量 keys 兜底: %d", progressKeys.size)
+                }
                 val rowIndexes = current.items.map { it.row.rowIndex }
 
                 // 1. 清除缩略图目录
                 val thumbRoot = File(context.getExternalFilesDir(null), "thumbnails")
                 for (key in progressKeys) {
                     val dir = File(thumbRoot, key)
+                    if (dir.exists()) {
+                        dir.deleteRecursively()
+                    }
+                }
+
+                // 1.5 清除 photos 原图目录（原图存于 photos/<progressKey>/，需一并清理）
+                val photosRoot = File(context.getExternalFilesDir(null), "photos")
+                for (key in progressKeys) {
+                    val dir = File(photosRoot, key)
                     if (dir.exists()) {
                         dir.deleteRecursively()
                     }

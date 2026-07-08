@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.CameraAlt
@@ -27,6 +28,9 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -36,6 +40,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -43,6 +48,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -56,14 +62,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.documentfile.provider.DocumentFile
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.SearchField
+import com.banktool.loanphoto.ui.camera.PhotoGallerySheet
 import com.banktool.loanphoto.ui.customer.components.CustomerRowItem
 import com.banktool.loanphoto.ui.customer.components.RecentFilesBottomSheet
 import com.banktool.loanphoto.ui.customer.components.RowLongPressMenu
@@ -75,6 +84,7 @@ import com.banktool.loanphoto.ui.theme.Divider
 import com.banktool.loanphoto.ui.theme.Error
 import com.banktool.loanphoto.ui.theme.Text as TextColor
 import com.banktool.loanphoto.ui.theme.TextSecondary
+import java.io.File
 
 /**
  * 客户清单列表主界面。
@@ -112,6 +122,12 @@ fun CustomerListScreen(
 
     // AI 功能下拉菜单展开状态
     var showAiMenu by remember { mutableStateOf(false) }
+
+    // 已拍照片画廊 BottomSheet 当前关联的行（null 表示不显示）
+    var gallerySheetRow by remember { mutableStateOf<CustomerRow?>(null) }
+
+    // 添加查勘条目弹窗是否显示
+    var showAddEntryDialog by remember { mutableStateOf(false) }
 
     // 拍照返回后刷新照片计数（含各分类计数）
     LifecycleResumeEffect(Unit) {
@@ -183,6 +199,9 @@ fun CustomerListScreen(
                 viewModel.hideRecentFilesSheet()
                 viewModel.loadFromRecent(uri)
             },
+            onRemoveFile = { uri ->
+                viewModel.removeRecentFile(uri)
+            },
             onDismiss = { viewModel.hideRecentFilesSheet() },
         )
     }
@@ -198,6 +217,17 @@ fun CustomerListScreen(
                 viewModel.saveRowRemark(rowIndex, content)
             },
             onDismiss = { viewModel.dismissEditRemark() },
+        )
+    }
+
+    // 添加查勘条目弹窗
+    if (showAddEntryDialog) {
+        AddEntryDialog(
+            onSave = { serial, borrower, address ->
+                showAddEntryDialog = false
+                viewModel.addSurveyEntry(serial, borrower, address)
+            },
+            onDismiss = { showAddEntryDialog = false },
         )
     }
 
@@ -332,11 +362,36 @@ fun CustomerListScreen(
             // 状态条
             StatusBar(uiState = uiState)
 
+            // 添加查勘条目按钮（仅在有数据时显示，避免无文件时点击无响应）
+            if (uiState.rows.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    OutlinedButton(onClick = { showAddEntryDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = null,
+                            tint = Accent,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(text = "添加查勘条目", color = Accent)
+                    }
+                }
+            }
+
             // 列表 / 空态 / 加载态
             Box(modifier = Modifier.fillMaxSize()) {
                 when {
                     uiState.isLoading -> LoadingState()
-                    uiState.rows.isEmpty() -> EmptyState(onImport = { launchExcelPicker() })
+                    uiState.rows.isEmpty() -> EmptyState(
+                        onImport = { launchExcelPicker() },
+                        recentFiles = uiState.recentFiles.take(5),
+                        onFileSelected = { uri -> viewModel.loadFromRecent(uri) },
+                    )
                     else -> {
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
@@ -357,9 +412,7 @@ fun CustomerListScreen(
                                         isBatchMarked = row.progressKey in uiState.batchMarkedKeys,
                                         onSelectionToggle = { viewModel.toggleRowSelection(row.rowIndex) },
                                         onTakePhoto = { onTakePhoto(listOf(row)) },
-                                        onViewPhotos = {
-                                            // TODO Phase 2.7: 跳转到 ProgressScreen
-                                        },
+                                        onViewPhotos = { gallerySheetRow = row },
                                         onEditRemark = {
                                             viewModel.startEditRemark(row.rowIndex)
                                         },
@@ -372,9 +425,7 @@ fun CustomerListScreen(
                                         onToggleBatchMark = {
                                             viewModel.toggleBatchMarked(row.progressKey)
                                         },
-                                        onViewPhotos = {
-                                            // TODO Phase 2.7: 跳转到 ProgressScreen
-                                        },
+                                        onViewPhotos = { gallerySheetRow = row },
                                         onEditRemark = {
                                             viewModel.startEditRemark(row.rowIndex)
                                         },
@@ -398,6 +449,31 @@ fun CustomerListScreen(
                 }
             }
         }
+    }
+
+    // 已拍照片画廊 BottomSheet
+    gallerySheetRow?.let { row ->
+        val galleryContext = LocalContext.current
+        val thumbnails = remember(gallerySheetRow) {
+            val thumbDir = File(
+                galleryContext.getExternalFilesDir(null),
+                "thumbnails/${row.progressKey.ifBlank { "default" }.replace(Regex("[^A-Za-z0-9._-]"), "_")}",
+            )
+            if (thumbDir.exists()) {
+                thumbDir.listFiles { f -> f.extension.equals("jpg", true) }
+                    ?.sortedBy { it.lastModified() }
+                    ?.map { it.absolutePath }
+                    ?: emptyList()
+            } else {
+                emptyList()
+            }
+        }
+        PhotoGallerySheet(
+            thumbnails = thumbnails,
+            totalCount = thumbnails.size,
+            onDismiss = { gallerySheetRow = null },
+            customerName = row.borrower,
+        )
     }
 }
 
@@ -480,33 +556,54 @@ private fun SearchBarRow(
 
         Spacer(modifier = Modifier.width(8.dp))
 
-        // 搜索输入框
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = onSearchQueryChange,
-            modifier = Modifier.weight(1f),
-            placeholder = {
-                Text(
-                    text = "搜索${searchField.displayName}",
-                    color = TextSecondary,
-                    fontSize = 14.sp,
-                )
-            },
-            leadingIcon = {
+        // 搜索输入框：状态过滤字段（如"未走访"）隐藏输入框，显示提示文字
+        if (searchField.isStatusFilter) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Icon(
                     imageVector = Icons.Filled.Search,
                     contentDescription = null,
                     tint = TextSecondary,
                 )
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(8.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Accent,
-                unfocusedBorderColor = Divider,
-            ),
-            textStyle = TextStyle(fontSize = 14.sp, color = TextColor),
-        )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "已自动筛选未走访条目",
+                    color = TextSecondary,
+                    fontSize = 14.sp,
+                )
+            }
+        } else {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                modifier = Modifier.weight(1f),
+                placeholder = {
+                    Text(
+                        text = "搜索${searchField.displayName}",
+                        color = TextSecondary,
+                        fontSize = 14.sp,
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = null,
+                        tint = TextSecondary,
+                    )
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(8.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Accent,
+                    unfocusedBorderColor = Divider,
+                ),
+                textStyle = TextStyle(fontSize = 14.sp, color = TextColor),
+            )
+        }
     }
 }
 
@@ -549,56 +646,178 @@ private fun StatusBar(uiState: CustomerListViewModel.UiState) {
 
 @Composable
 private fun LoadingState() {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            CircularProgressIndicator(color = Accent)
-            Spacer(modifier = Modifier.size(12.dp))
-            Text(
-                text = "正在加载 Excel...",
-                color = TextSecondary,
-                fontSize = 14.sp,
-            )
+    Dialog(onDismissRequest = {}) {
+        Card(
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = CardColor),
+            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                CircularProgressIndicator(
+                    color = Accent,
+                    strokeWidth = 5.dp,
+                    modifier = Modifier.size(48.dp),
+                )
+                Spacer(modifier = Modifier.size(16.dp))
+                Text(
+                    text = "加载中...",
+                    color = TextColor,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun EmptyState(onImport: () -> Unit) {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center,
+private fun EmptyState(
+    onImport: () -> Unit,
+    recentFiles: List<RecentFileItem> = emptyList(),
+    onFileSelected: (String) -> Unit = {},
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(top = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(
+            imageVector = Icons.Filled.Upload,
+            contentDescription = null,
+            tint = Divider,
+            modifier = Modifier.size(64.dp),
+        )
+        Spacer(modifier = Modifier.size(16.dp))
+        Text(
+            text = "请导入 Excel 文件",
+            color = TextColor,
+            fontWeight = FontWeight.Medium,
+            fontSize = 16.sp,
+        )
+        Spacer(modifier = Modifier.size(8.dp))
+        Text(
+            text = "支持 .xlsx 格式，点击右上角导入按钮",
+            color = TextSecondary,
+            fontSize = 13.sp,
+        )
+        Spacer(modifier = Modifier.size(16.dp))
+        IconButton(onClick = onImport) {
             Icon(
                 imageVector = Icons.Filled.Upload,
-                contentDescription = null,
-                tint = Divider,
-                modifier = Modifier.size(64.dp),
+                contentDescription = "导入",
+                tint = Accent,
             )
-            Spacer(modifier = Modifier.size(16.dp))
+        }
+        // 最近打开文件
+        if (recentFiles.isNotEmpty()) {
+            Spacer(modifier = Modifier.size(24.dp))
             Text(
-                text = "请导入 Excel 文件",
-                color = TextColor,
-                fontWeight = FontWeight.Medium,
-                fontSize = 16.sp,
-            )
-            Spacer(modifier = Modifier.size(8.dp))
-            Text(
-                text = "支持 .xlsx 格式，点击右上角导入按钮",
+                text = "最近打开",
                 color = TextSecondary,
                 fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
             )
-            Spacer(modifier = Modifier.size(16.dp))
-            IconButton(onClick = onImport) {
-                Icon(
-                    imageVector = Icons.Filled.Upload,
-                    contentDescription = "导入",
-                    tint = Accent,
-                )
+            Spacer(modifier = Modifier.size(8.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp),
+            ) {
+                recentFiles.forEach { file ->
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = CardColor,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Divider),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .clickable { onFileSelected(file.uri) },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.History,
+                                contentDescription = null,
+                                tint = Accent,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = file.fileName,
+                                color = TextColor,
+                                fontSize = 14.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+/**
+ * 添加查勘条目弹窗。
+ *
+ * 三个输入字段：序号（可选）、借款人（必填）、地址（必填）。
+ * 借款人或地址为空时禁用保存按钮。
+ */
+@Composable
+private fun AddEntryDialog(
+    onSave: (serial: String, borrower: String, address: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var serial by remember { mutableStateOf("") }
+    var borrower by remember { mutableStateOf("") }
+    var address by remember { mutableStateOf("") }
+    val canSave = borrower.isNotBlank() && address.isNotBlank()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("添加查勘条目", fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = serial,
+                    onValueChange = { serial = it },
+                    label = { Text("序号") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(modifier = Modifier.size(8.dp))
+                OutlinedTextField(
+                    value = borrower,
+                    onValueChange = { borrower = it },
+                    label = { Text("借款人 *") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(modifier = Modifier.size(8.dp))
+                OutlinedTextField(
+                    value = address,
+                    onValueChange = { address = it },
+                    label = { Text("地址 *") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(serial, borrower, address) },
+                enabled = canSave,
+            ) {
+                Text("保存", color = if (canSave) Accent else TextSecondary)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }
