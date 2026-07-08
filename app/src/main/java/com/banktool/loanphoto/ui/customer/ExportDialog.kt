@@ -301,7 +301,7 @@ private fun ExportProgressDialog(current: Int, total: Int) {
  * @param onDismiss 关闭弹窗回调
  */
 @Composable
-private fun ExportResultDialog(
+fun ExportResultDialog(
     file: File,
     fileSize: Long,
     onShare: (File) -> Unit,

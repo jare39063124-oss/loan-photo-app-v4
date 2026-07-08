@@ -1,8 +1,10 @@
 package com.banktool.loanphoto.ui.customer
 
 import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.banktool.loanphoto.data.datasource.ExcelWriter
 import com.banktool.loanphoto.data.export.ExportDimension
 import com.banktool.loanphoto.data.export.ExportFormat
 import com.banktool.loanphoto.data.export.PhotoExporter
@@ -62,6 +64,7 @@ class CustomerListViewModel @Inject constructor(
     private val recentFilesStorage: RecentFilesStorage,
     private val photoSessionHolder: PhotoSessionHolder,
     private val photoExporter: PhotoExporter,
+    private val excelWriter: ExcelWriter,
 ) : ViewModel() {
 
     /**
@@ -368,12 +371,35 @@ class CustomerListViewModel @Inject constructor(
     }
 
     /**
-     * 保存行级备注到 progress.json 的 _row_remarks。
+     * 保存行级备注到 progress.json 的 _row_remarks，并回写到 Excel F 列。
+     *
+     * - 先写入内部存储（progress.json 的 _row_remarks）
+     * - 若 [UiState.excelUri] 非空，额外调用 [ExcelWriter.writeRemarksToExcel] 回写 Excel F 列
+     * - Excel 写入失败时不阻断内部存储保存，通过 [UiState.error] 提示用户
+     * - Excel 写入成功时不额外提示，保持原有 "备注已保存" message
      */
     fun saveRowRemark(rowIndex: Int, content: String) {
         viewModelScope.launch {
             try {
+                // 1. 保存到内部存储 progress.json 的 _row_remarks
                 progressRepository.saveRowRemark(rowIndex, content)
+
+                // 2. 额外回写到 Excel F 列（若 excelUri 可用）
+                val currentUri = uiState.value.excelUri
+                var excelWriteOk = true
+                if (currentUri.isNotBlank()) {
+                    try {
+                        excelWriteOk = excelWriter.writeRemarksToExcel(
+                            Uri.parse(currentUri),
+                            mapOf(rowIndex to content),
+                        )
+                    } catch (e: Exception) {
+                        Timber.e(e, "备注回写 Excel 失败, rowIndex=%d", rowIndex)
+                        excelWriteOk = false
+                    }
+                }
+
+                // 3. 更新 UI 状态
                 _uiState.update { current ->
                     val newRemarks = current.rowRemarks.toMutableMap()
                     if (content.isBlank()) {
@@ -381,11 +407,19 @@ class CustomerListViewModel @Inject constructor(
                     } else {
                         newRemarks[rowIndex.toString()] = content
                     }
-                    current.copy(
-                        rowRemarks = newRemarks,
-                        editingRemarkRowIndex = null,
-                        message = "备注已保存",
-                    )
+                    if (excelWriteOk) {
+                        current.copy(
+                            rowRemarks = newRemarks,
+                            editingRemarkRowIndex = null,
+                            message = "备注已保存",
+                        )
+                    } else {
+                        current.copy(
+                            rowRemarks = newRemarks,
+                            editingRemarkRowIndex = null,
+                            error = "Excel 写入失败，备注仅保存在 App 内",
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 Timber.e(e, "保存备注失败")

@@ -8,17 +8,19 @@ import androidx.datastore.preferences.preferencesDataStoreFile
 import com.banktool.loanphoto.data.datasource.ExcelDataSource
 import com.banktool.loanphoto.data.datasource.ExcelWriter
 import com.banktool.loanphoto.data.datasource.ProgressFileDataSource
+import com.banktool.loanphoto.data.repository.ProgressRepositoryImpl
+import com.banktool.loanphoto.data.repository.SpecialLogRepositoryImpl
+import com.banktool.loanphoto.data.repository.VisitNoteRepositoryImpl
 import com.banktool.loanphoto.data.naming.NamingConfigRepository
 import com.banktool.loanphoto.data.naming.NamingRuleGenerator
 import com.banktool.loanphoto.data.repository.CameraSessionRepositoryImpl
 import com.banktool.loanphoto.data.repository.ExcelDataIndexRepositoryImpl
 import com.banktool.loanphoto.data.repository.ExcelRepositoryImpl
-import com.banktool.loanphoto.data.repository.ProgressRepositoryImpl
-import com.banktool.loanphoto.data.repository.VisitNoteRepositoryImpl
 import com.banktool.loanphoto.domain.repository.CameraSessionRepository
 import com.banktool.loanphoto.domain.repository.ExcelDataIndexRepository
 import com.banktool.loanphoto.domain.repository.ExcelRepository
 import com.banktool.loanphoto.domain.repository.ProgressRepository
+import com.banktool.loanphoto.domain.repository.SpecialLogRepository
 import com.banktool.loanphoto.domain.repository.VisitNoteRepository
 import dagger.Module
 import dagger.Provides
@@ -32,7 +34,7 @@ import javax.inject.Singleton
  *
  * 提供：
  * - 数据源: [ExcelDataSource]、[ProgressFileDataSource]
- * - 仓库实现: Excel / Progress / CameraSession / VisitNote / ExcelDataIndex
+ * - 仓库实现: Excel / Progress / CameraSession / VisitNote / SpecialLog / ExcelDataIndex
  * - DataStore Preferences（命名规则配置持久化）
  *
  * [NamingConfigRepository] 与 [NamingRuleGenerator] 通过 @Inject constructor 自动注入，
@@ -97,6 +99,11 @@ object AppModule {
     @Singleton
     fun provideVisitNoteRepository(@ApplicationContext ctx: Context): VisitNoteRepository =
         VisitNoteRepositoryImpl(ctx)
+
+    @Provides
+    @Singleton
+    fun provideSpecialLogRepository(@ApplicationContext ctx: Context): SpecialLogRepository =
+        SpecialLogRepositoryImpl(ctx)
 
     @Provides
     @Singleton

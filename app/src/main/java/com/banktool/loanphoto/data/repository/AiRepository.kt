@@ -39,12 +39,14 @@ class AiRepository @Inject constructor(
      * @param visitedRecords 已拍摄客户列表
      * @param batchMarkedCount 同类型标记数
      * @param visitNote 走访备注
+     * @param specialLog AI 生成页面用户填写的额外补充说明（special_log）
      * @return 解析后的 ReportRecord 列表
      */
     suspend fun generateReport(
         visitedRecords: List<Pair<CustomerRow, PhotoRecord>>,
         batchMarkedCount: Int,
-        visitNote: String?
+        visitNote: String?,
+        specialLog: String? = null
     ): List<ReportRecord> = withContext(Dispatchers.IO) {
         if (BuildConfig.DEEPSEEK_API_KEY.isBlank()) {
             Timber.e("DeepSeek API key is blank")
@@ -55,6 +57,7 @@ class AiRepository @Inject constructor(
             visitedRecords = visitedRecords,
             batchMarkedCount = batchMarkedCount,
             visitNote = visitNote,
+            specialLog = specialLog,
             model = MODEL
         )
 
