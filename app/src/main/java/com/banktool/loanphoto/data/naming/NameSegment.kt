@@ -5,6 +5,7 @@ package com.banktool.loanphoto.data.naming
  *
  * - [DATE] 拍摄日期（yyyyMMdd）
  * - [BORROWER] 客户名
+ * - [SERIAL] 序号（取自 [com.banktool.loanphoto.domain.entity.CustomerRow.serial]）
  * - [ADDRESS] 地址 + 时间（addrGeneral + addrDetail 拼接）
  * - [NONE] 空值（该段省略）
  *
@@ -13,6 +14,7 @@ package com.banktool.loanphoto.data.naming
 enum class NameSegment(val displayName: String) {
     DATE("拍摄日期"),
     BORROWER("客户名"),
+    SERIAL("序号"),
     ADDRESS("地址+时间"),
     NONE("空值"),
     ;

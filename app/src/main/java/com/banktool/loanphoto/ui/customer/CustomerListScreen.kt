@@ -1,6 +1,8 @@
 package com.banktool.loanphoto.ui.customer
 
 import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
@@ -129,6 +132,32 @@ fun CustomerListScreen(
     // 添加查勘条目弹窗是否显示
     var showAddEntryDialog by remember { mutableStateOf(false) }
 
+    // 照片导出弹窗是否显示
+    var showExportDialog by remember { mutableStateOf(false) }
+
+    // 导出状态（用于驱动 ExportDialog 三态切换与完成后的 Toast/分享）
+    val exportState by viewModel.exportState.collectAsStateWithLifecycle()
+
+    // 「保存到本地」：通过 SAF ACTION_CREATE_DOCUMENT 让用户选择保存位置，
+    // 然后把导出文件复制到目标 URI。pendingSaveFile 暂存待保存的文件。
+    var pendingSaveFile by remember { mutableStateOf<File?>(null) }
+    val saveToLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("*/*"),
+    ) { uri: Uri? ->
+        val file = pendingSaveFile
+        if (uri != null && file != null) {
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                file.inputStream().use { it.copyTo(out) }
+            }
+            Toast.makeText(context, "已保存到本地", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "保存已取消", Toast.LENGTH_SHORT).show()
+        }
+        viewModel.resetExportState()
+        showExportDialog = false
+        pendingSaveFile = null
+    }
+
     // 拍照返回后刷新照片计数（含各分类计数）
     LifecycleResumeEffect(Unit) {
         viewModel.refreshPhotoCounts()
@@ -231,6 +260,29 @@ fun CustomerListScreen(
         )
     }
 
+    // 照片导出弹窗（三态：配置 / 进度 / 完成）
+    if (showExportDialog) {
+        ExportDialog(
+            exportState = exportState,
+            onExport = { dimension, keyword, format ->
+                viewModel.exportPhotos(dimension, keyword, format)
+            },
+            onDismiss = {
+                viewModel.resetExportState()
+                showExportDialog = false
+            },
+            onShare = { file ->
+                shareExportedFile(context, file)
+                viewModel.resetExportState()
+                showExportDialog = false
+            },
+            onSaveToLocal = { file ->
+                pendingSaveFile = file
+                saveToLauncher.launch("${file.nameWithoutExtension}.${file.extension}")
+            },
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -271,6 +323,17 @@ fun CustomerListScreen(
                             Icon(
                                 imageVector = Icons.Filled.Assessment,
                                 contentDescription = "查看进度",
+                                tint = Accent,
+                            )
+                        }
+                        // 照片导出入口（紧邻 AI 功能入口）
+                        IconButton(onClick = {
+                            showExportDialog = true
+                            viewModel.resetExportState()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Filled.IosShare,
+                                contentDescription = "导出照片",
                                 tint = Accent,
                             )
                         }
@@ -495,7 +558,9 @@ private fun SearchBarRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 8.dp),
+            // vertical 缩短至 4dp（原 8dp），让「添加查勘条目」按钮更贴近搜索栏，
+            // 为列表条目留出更多垂直空间。
+            .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 全选 CheckBox（置于搜索栏最左侧）

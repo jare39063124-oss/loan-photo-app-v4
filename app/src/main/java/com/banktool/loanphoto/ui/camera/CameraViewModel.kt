@@ -65,6 +65,10 @@ data class CameraUiState(
     val zoomRatio: Float = 1f,
     val maxZoomRatio: Float = 1f,
     val minZoomRatio: Float = 1f,
+    /**
+     * 闪光灯模式：0=关闭/OFF, 1=自动/AUTO, 2=常亮/TORCH, 3=开启/ON。
+     */
+    val flashMode: Int = 0,
 )
 
 /**
@@ -151,6 +155,23 @@ class CameraViewModel @Inject constructor(
         _uiState.update { it.copy(currentPhotoType = type) }
     }
 
+    /**
+     * 设置闪光灯模式（0=OFF, 1=AUTO, 2=TORCH 常亮, 3=ON）。
+     *
+     * - 模式 2（TORCH 常亮）会立即调用 [Camera.cameraControl.enableTorch] 打开补光灯，
+     *   并在 [onCameraReady] 时根据当前 flashMode 自动恢复常亮态。
+     * - 切换到其它模式时关闭补光灯（仅拍照瞬间由 ImageCapture.flashMode 控制）。
+     */
+    fun setFlashMode(mode: Int) {
+        _uiState.update { it.copy(flashMode = mode) }
+        val cam = camera
+        if (cam != null) {
+            // 切换到 TORCH（2）开灯；其它模式关灯，交给 ImageCapture 在拍照瞬间处理
+            val enableTorch = mode == 2
+            cam.cameraControl.enableTorch(enableTorch)
+        }
+    }
+
     /** 关闭画廊。 */
     fun dismissGallery() {
         _uiState.update { it.copy(showGallery = false) }
@@ -176,6 +197,10 @@ class CameraViewModel @Inject constructor(
     fun onCameraReady(camera: Camera) {
         this.camera = camera
         updateZoomInfo(camera)
+        // 若当前处于常亮模式（flashMode==2），相机绑定后立即打开补光灯
+        if (_uiState.value.flashMode == 2) {
+            camera.cameraControl.enableTorch(true)
+        }
         _uiState.update { it.copy(cameraReady = true) }
     }
 
@@ -295,6 +320,17 @@ class CameraViewModel @Inject constructor(
         val photosDir = File(ctx.getExternalFilesDir(null), "photos/${primary.progressKey}")
         if (!photosDir.exists()) photosDir.mkdirs()
 
+        // 根据 flashMode 设置 ImageCapture 闪光灯模式：
+        // 0→OFF, 1→AUTO, 2→TORCH 常亮（enableTorch 由 onCameraReady/setFlashMode 维持，
+        //    拍照瞬间仍用 ON 确保补光），3→ON
+        val flashMode = _uiState.value.flashMode
+        imageCapture.flashMode = when (flashMode) {
+            1 -> ImageCapture.FLASH_MODE_AUTO
+            2 -> ImageCapture.FLASH_MODE_ON // 常亮：torch 已开，拍照用 ON
+            3 -> ImageCapture.FLASH_MODE_ON
+            else -> ImageCapture.FLASH_MODE_OFF
+        }
+
         _uiState.update { it.copy(isCapturing = true, lastSavedPath = null) }
 
         viewModelScope.launch {
@@ -392,6 +428,7 @@ class CameraViewModel @Inject constructor(
                 val segments = watermarkGenerator.buildSegments(
                     captureTimeMillis = System.currentTimeMillis(),
                     location = location,
+                    serial = primary.serial.takeIf { it.isNotBlank() },
                 )
                 // 读取持久化水印配置（position/fontSize/opacity/enabled），
                 // segments 由本次拍照实时生成，覆盖配置中的空 segments。

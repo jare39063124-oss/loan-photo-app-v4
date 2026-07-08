@@ -231,25 +231,39 @@ class WatermarkGenerator @Inject constructor() {
     }
 
     /**
-     * 构造水印 3 段内容：拍摄日期 / 地址名 / 经纬度。
+     * 构造水印段内容：拍摄日期 / （可选）序号 / 地址名 / 经纬度。
      *
      * - location 为 null 时（定位失败），地址段和经纬度段显示「定位失败」
      * - 拍摄日期段始终正常显示
+     * - [serial] 非空且非 blank 时在日期段后插入「序号:xxx」段，
+     *   segments 变为 [日期, 序号, 地址, 经纬度]（4 段）；
+     *   serial 为空时保持原 3 段 [日期, 地址, 经纬度]
      *
      * @param captureTimeMillis 拍照时间毫秒
      * @param location 位置结果；为 null 时水印显示「定位失败」
+     * @param serial 客户序号；非空时插入「序号:xxx」段
      */
     fun buildSegments(
         captureTimeMillis: Long,
         location: LocationResult?,
+        serial: String? = null,
     ): List<String> {
         val dateStr = LocalDate.now().format(dateFormatter)
+        val serialSegment = serial?.takeIf { it.isNotBlank() }?.let { "序号:$it" }
         return if (location != null) {
             val addr = location.address.ifBlank { "未知位置" }
             val latlngStr = "%.6f,%.6f".format(Locale.US, location.lat, location.lng)
-            listOf(dateStr, addr, latlngStr)
+            if (serialSegment != null) {
+                listOf(dateStr, serialSegment, addr, latlngStr)
+            } else {
+                listOf(dateStr, addr, latlngStr)
+            }
         } else {
-            listOf(dateStr, "定位失败", "定位失败")
+            if (serialSegment != null) {
+                listOf(dateStr, serialSegment, "定位失败", "定位失败")
+            } else {
+                listOf(dateStr, "定位失败", "定位失败")
+            }
         }
     }
 

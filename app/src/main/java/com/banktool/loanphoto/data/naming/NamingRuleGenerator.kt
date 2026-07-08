@@ -16,7 +16,7 @@ import javax.inject.Singleton
  *
  * 规则：
  * 1. 遍历 [NamingConfig.segments]，跳过 [NameSegment.NONE] 段；
- * 2. 各段取值（DATE→yyyyMMdd、BORROWER→borrower、ADDRESS→addrGeneral+addrDetail），
+ * 2. 各段取值（DATE→yyyyMMdd、BORROWER→borrower、SERIAL→serial、ADDRESS→addrGeneral+addrDetail），
  *    若取值为空字符串则同样跳过该段；
  * 3. 将保留的非空段用 `-` 连接，再追加 `-` + 后缀；
  * 4. 若所有段均被跳过（全 NONE 或数据全空），回退 `IMG_<timestamp>.jpg`；
@@ -69,11 +69,12 @@ class NamingRuleGenerator @Inject constructor() {
         return sanitize(name)
     }
 
-    /** 计算单个段的字符串值（NONE 返回空串）。 */
+    /** 计算单个段的字符串值（NONE 返回空串，空串段在 [generate] 中被跳过）。 */
     private fun buildSegment(segment: NameSegment, row: CustomerRow, timestamp: Long): String =
         when (segment) {
             NameSegment.DATE -> dateFormat.get()!!.format(Date(timestamp))
             NameSegment.BORROWER -> row.borrower
+            NameSegment.SERIAL -> row.serial
             NameSegment.ADDRESS -> row.addrGeneral + row.addrDetail
             NameSegment.NONE -> ""
         }

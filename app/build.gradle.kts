@@ -1,5 +1,8 @@
 import java.util.Properties
 import java.io.FileInputStream
+import java.security.MessageDigest
+import java.security.KeyStore
+import java.security.cert.X509Certificate
 
 plugins {
     alias(libs.plugins.android.application)
@@ -17,16 +20,45 @@ val localProperties = Properties().apply {
     }
 }
 
+/** SHA-256 哈希，返回小写 hex 字符串。空输入返回空串。 */
+fun sha256(input: String): String {
+    if (input.isEmpty()) return ""
+    val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
+    return bytes.joinToString("") { "%02x".format(it) }
+}
+
+/** 从 keystore 读取签名证书的 SHA-256（小写 hex）。keystore 不存在或密码空时返回空串（兼容无 keystore 的 debug 构建）。 */
+fun signingCertSha256(keystoreFile: File, storePass: String, alias: String): String {
+    if (!keystoreFile.exists() || storePass.isEmpty()) return ""
+    return try {
+        val ks = KeyStore.getInstance("JKS")
+        FileInputStream(keystoreFile).use { fis ->
+            ks.load(fis, storePass.toCharArray())
+        }
+        val cert = ks.getCertificate(alias) ?: return ""
+        val digest = MessageDigest.getInstance("SHA-256").digest(cert.encoded)
+        digest.joinToString("") { "%02x".format(it) }
+    } catch (e: Exception) {
+        ""
+    }
+}
+
 android {
     namespace = "com.banktool.loanphoto"
     compileSdk = 35
+
+    val releaseStorePassword = localProperties.getProperty("RELEASE_STORE_PASSWORD", "")
+    val releaseKeyPassword = localProperties.getProperty("RELEASE_KEY_PASSWORD", "")
+    val releaseKeyAlias = localProperties.getProperty("RELEASE_KEY_ALIAS", "loanphoto")
+    val releaseKeystoreFile = rootProject.file("loanphoto-release.jks")
+    val expectedSigningHash = signingCertSha256(releaseKeystoreFile, releaseStorePassword, releaseKeyAlias)
 
     defaultConfig {
         applicationId = "com.banktool.loanphoto"
         minSdk = 26  // Apache POI 5.x requires API 26 (MethodHandle); all target devices are API 30+
         targetSdk = 35
-        versionCode = 6
-        versionName = "4.0.5"
+        versionCode = 8
+        versionName = "4.0.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -35,6 +67,16 @@ android {
         buildConfigField("String", "DEEPSEEK_API_KEY", "\"${localProperties.getProperty("DEEPSEEK_API_KEY", "")}\"")
         buildConfigField("String", "DEEPSEEK_API_URL", "\"https://api.deepseek.com/v1\"")
         buildConfigField("String", "DEEPSEEK_MODEL", "\"deepseek-v4-flash\"")
+        buildConfigField("String", "EXPECTED_SIGNING_HASH", "\"$expectedSigningHash\"")
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = releaseKeystoreFile
+            storePassword = releaseStorePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword
+        }
     }
 
     buildTypes {
@@ -45,9 +87,28 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
         debug {
             isMinifyEnabled = false
+        }
+    }
+
+    // 双版本构建：trial（体验版，带授权/到期限制） / full（完整版）
+    // LICENSED_DEVICE_ID_HASH：授权设备 Android ID 的 SHA-256（小写 hex），不明文存储
+    flavorDimensions += "license"
+    productFlavors {
+        create("trial") {
+            dimension = "license"
+            buildConfigField("boolean", "IS_TRIAL", "true")
+            buildConfigField("String", "EXPIRY_DATE", "\"2026-12-31\"")
+            buildConfigField("String", "LICENSED_DEVICE_ID_HASH", "\"${sha256(localProperties.getProperty("LICENSED_DEVICE_ID", ""))}\"")
+        }
+        create("full") {
+            dimension = "license"
+            buildConfigField("boolean", "IS_TRIAL", "false")
+            buildConfigField("String", "EXPIRY_DATE", "\"2099-12-31\"")
+            buildConfigField("String", "LICENSED_DEVICE_ID_HASH", "\"${sha256("")}\"")
         }
     }
 

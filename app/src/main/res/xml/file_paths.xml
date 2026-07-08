@@ -10,6 +10,11 @@
         name="thumbnails"
         path="thumbnails/" />
 
+    <!-- 导出文件目录（getExternalFilesDir()/reports/，用于 PDF/ZIP 导出后 ACTION_SEND 分享） -->
+    <external-files-path
+        name="reports"
+        path="reports/" />
+
     <!-- 临时目录 -->
     <cache-path
         name="cache"

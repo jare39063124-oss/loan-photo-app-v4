@@ -54,6 +54,7 @@ import com.banktool.loanphoto.BuildConfig
 import com.banktool.loanphoto.data.camera.WatermarkConfig
 import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkPosition
+import com.banktool.loanphoto.data.license.LicenseChecker
 import com.banktool.loanphoto.data.naming.NameSegment
 import com.banktool.loanphoto.ui.theme.Accent
 import com.banktool.loanphoto.ui.theme.Bg
@@ -94,6 +95,11 @@ fun SettingsScreen(
 
     val namingConfig by viewModel.namingConfig.collectAsStateWithLifecycle()
     val watermarkConfig by viewModel.watermarkConfig.collectAsStateWithLifecycle()
+
+    // 设备识别码 / 设备信息（用于「关于」卡片展示，授权激活时需将识别码告知作者）
+    val licenseChecker = remember { LicenseChecker() }
+    val deviceId = remember { licenseChecker.getDeviceId(context) }
+    val deviceInfo = remember { licenseChecker.getDeviceInfo() }
 
     Scaffold(
         topBar = {
@@ -137,7 +143,25 @@ fun SettingsScreen(
                 SettingsDivider()
                 SettingsRow(label = "版本", value = BuildConfig.VERSION_NAME)
                 SettingsDivider()
+                SettingsRow(label = "设备识别码", value = deviceId)
+                SettingsDivider()
+                SettingsRow(label = "设备信息", value = deviceInfo)
+                // 体验版额外展示有效期
+                if (BuildConfig.IS_TRIAL) {
+                    SettingsDivider()
+                    SettingsRow(label = "有效期至", value = BuildConfig.EXPIRY_DATE)
+                }
+                SettingsDivider()
                 SettingsRow(label = "联系方式", value = "15940454123（微信同）")
+                if (BuildConfig.IS_TRIAL) {
+                    SettingsDivider()
+                    Text(
+                        text = "重要说明：手机恢复出厂设置后，设备识别码将改变，重新安装将导致 App 不可用。在使用有效期内联系作者，仅可获得一次重新激活机会。",
+                        fontSize = 12.sp,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                }
             }
 
             // AI 模型

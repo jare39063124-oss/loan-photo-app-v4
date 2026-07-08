@@ -4,6 +4,12 @@
 -dontwarn org.apache.poi.**
 -dontwarn org.apache.xmlbeans.**
 -dontwarn org.apache.commons.collections.**
+-dontwarn org.openxmlformats.**
+-dontwarn schemaorg_apache_xmlbeans.**
+-dontwarn org.osgi.**
+-dontwarn org.apache.logging.log4j.**
+-dontwarn java.awt.**
+-dontwarn com.graphbuilder.**
 -keep class org.apache.poi.** { *; }
 -keep class org.apache.xmlbeans.** { *; }
 -keep class org.openxmlformats.** { *; }
@@ -33,7 +39,7 @@
 -keep class com.banktool.loanphoto.data.dto.** { *; }
 -keep @com.squareup.moshi.JsonClass class * { *; }
 -keepclassmembers @com.squareup.moshi.JsonClass class * {
-    <init>;
+    <init>(...);
     <fields>;
 }
 
@@ -66,3 +72,7 @@
 -dontwarn org.slf4j.**
 -dontwarn javax.annotation.**
 -dontwarn javax.lang.**
+
+# --- R8 full mode optimizations ---
+-allowaccessmodification
+-repackageclasses

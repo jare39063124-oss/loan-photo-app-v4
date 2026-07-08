@@ -25,6 +25,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Camera
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FlashAuto
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.FlashlightOn
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -193,6 +197,15 @@ fun CameraScreen(
                     Spacer(modifier = Modifier.height(10.dp))
                 }
 
+                // 闪光灯控制条（仅在相机预览就绪时显示）
+                if (uiState.cameraReady) {
+                    FlashControlBar(
+                        flashMode = uiState.flashMode,
+                        onFlashModeChange = viewModel::setFlashMode,
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+
                 BottomControlBar(
                     isCapturing = uiState.isCapturing,
                     sessionCount = uiState.photosThisSession,
@@ -206,12 +219,12 @@ fun CameraScreen(
                 )
             }
 
-            // Snackbar：定位失败提示（悬浮于控制条上方，含缩放条时抬高避免重叠）
+            // Snackbar：定位失败提示（悬浮于控制条上方，含缩放条+闪光灯条时抬高避免重叠）
             SnackbarHost(
                 hostState = snackbarHostState,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 165.dp, start = 16.dp, end = 16.dp),
+                    .padding(bottom = 225.dp, start = 16.dp, end = 16.dp),
             )
 
             // 拍照中遮罩
@@ -318,6 +331,8 @@ private fun CustomerInfoPill(
  * - [minZoomRatio] < 1.0 时显示广角按钮（点击在 0.5x / 1x 间切换）
  * - [maxZoomRatio] > 1.0 时显示滑块（范围 1.0 ~ maxZoomRatio）
  * - 滑块值会被 clamp 到 [1.0, maxZoomRatio]；广角态（zoom < 1.0）时滑块显示在 1.0 位置
+ * - 广角按钮与滑块在同一 Row 内水平并排排列（spacedBy 8.dp），
+ *   广角按钮固定宽度 36dp，滑块 weight(1f) 自适应剩余空间，确保窄屏不溢出
  * - 两者均不满足时整个 [ZoomControlBar] 不应被调用（由父 Composable 判断）
  */
 @Composable
@@ -336,27 +351,31 @@ private fun ZoomControlBar(
     Row(
         modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = if (hasZoom) Arrangement.spacedBy(12.dp) else Arrangement.Center,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // 广角切换按钮（仅当设备支持广角时显示）
+        // 广角切换按钮（仅当设备支持广角时显示）。固定宽度 36dp，文案「广角:开/关」
         if (hasWideAngle) {
             Surface(
                 shape = CircleShape,
                 color = if (isWideAngleActive) Accent else Color(0xCC404040),
-                modifier = Modifier.size(44.dp),
+                modifier = Modifier.size(36.dp),
             ) {
-                IconButton(onClick = onToggleWideAngle) {
+                IconButton(
+                    onClick = onToggleWideAngle,
+                    modifier = Modifier.size(36.dp),
+                ) {
                     Text(
-                        text = ".5",
+                        text = if (isWideAngleActive) "广角:开" else "广角:关",
                         color = Color.White,
-                        fontSize = 14.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
+                        maxLines = 1,
                     )
                 }
             }
         }
 
-        // 缩放滑块（仅当设备支持变焦时显示）
+        // 缩放滑块（仅当设备支持变焦时显示）。weight(1f) 自适应剩余空间
         if (hasZoom) {
             Slider(
                 value = zoomRatio.coerceIn(1.0f, maxZoomRatio),
@@ -370,6 +389,80 @@ private fun ZoomControlBar(
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.width(44.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 闪光灯控制条：4 个图标按钮水平排列（关闭 / 自动 / 常亮 / 开启）。
+ *
+ * - 0 关闭：Icons.Filled.FlashOff
+ * - 1 自动：Icons.Filled.FlashAuto
+ * - 2 常亮：Icons.Filled.FlashlightOn（持续补光，调用 enableTorch）
+ * - 3 开启：Icons.Filled.FlashOn（仅拍照瞬间闪光）
+ *
+ * 选中态高亮 [Accent] 背景 + 白色图标，未选中灰色背景。
+ */
+@Composable
+private fun FlashControlBar(
+    flashMode: Int,
+    onFlashModeChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FlashModeButton(
+            icon = Icons.Filled.FlashOff,
+            contentDescription = "闪光灯关闭",
+            isSelected = flashMode == 0,
+            onClick = { onFlashModeChange(0) },
+        )
+        FlashModeButton(
+            icon = Icons.Filled.FlashAuto,
+            contentDescription = "闪光灯自动",
+            isSelected = flashMode == 1,
+            onClick = { onFlashModeChange(1) },
+        )
+        FlashModeButton(
+            icon = Icons.Filled.FlashlightOn,
+            contentDescription = "闪光灯常亮",
+            isSelected = flashMode == 2,
+            onClick = { onFlashModeChange(2) },
+        )
+        FlashModeButton(
+            icon = Icons.Filled.FlashOn,
+            contentDescription = "闪光灯开启",
+            isSelected = flashMode == 3,
+            onClick = { onFlashModeChange(3) },
+        )
+    }
+}
+
+/**
+ * 单个闪光灯模式按钮。选中态 Accent 背景，未选中灰色背景。
+ */
+@Composable
+private fun FlashModeButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        shape = CircleShape,
+        color = if (isSelected) Accent else Color(0xCC404040),
+        modifier = Modifier.size(44.dp),
+    ) {
+        IconButton(onClick = onClick) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = Color.White,
+                modifier = Modifier.size(24.dp),
             )
         }
     }

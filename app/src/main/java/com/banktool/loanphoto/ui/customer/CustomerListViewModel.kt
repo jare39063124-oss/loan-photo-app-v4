@@ -3,6 +3,9 @@ package com.banktool.loanphoto.ui.customer
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.banktool.loanphoto.data.export.ExportDimension
+import com.banktool.loanphoto.data.export.ExportFormat
+import com.banktool.loanphoto.data.export.PhotoExporter
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.PhotoType
 import com.banktool.loanphoto.domain.entity.SearchField
@@ -23,6 +26,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
+import java.io.File
 import javax.inject.Inject
 
 /**
@@ -57,6 +61,7 @@ class CustomerListViewModel @Inject constructor(
     private val excelDataIndexRepository: ExcelDataIndexRepository,
     private val recentFilesStorage: RecentFilesStorage,
     private val photoSessionHolder: PhotoSessionHolder,
+    private val photoExporter: PhotoExporter,
 ) : ViewModel() {
 
     /**
@@ -90,6 +95,24 @@ class CustomerListViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+
+    /**
+     * 照片导出状态机。
+     *
+     * - [Idle]：未开始 / 已重置，可触发新导出
+     * - [Exporting]：进行中，(current, total) 用于进度显示
+     * - [Done]：成功，附带输出 [File]
+     * - [Error]：失败，附带错误消息
+     */
+    sealed class ExportState {
+        data object Idle : ExportState()
+        data class Exporting(val current: Int, val total: Int) : ExportState()
+        data class Done(val file: File, val fileSize: Long) : ExportState()
+        data class Error(val message: String) : ExportState()
+    }
+
+    private val _exportState = MutableStateFlow<ExportState>(ExportState.Idle)
+    val exportState: StateFlow<ExportState> = _exportState.asStateFlow()
 
     init {
         loadRecentFiles()
@@ -437,6 +460,61 @@ class CustomerListViewModel @Inject constructor(
                 _uiState.update { it.copy(error = "添加失败：请确认文件可写") }
             }
         }
+    }
+
+    // ---- 照片导出 ----
+
+    /**
+     * 触发照片导出。
+     *
+     * 流程：
+     * 1. 状态切到 [ExportState.Exporting]，UI 显示进度弹窗
+     * 2. 调用 [PhotoExporter.exportPhotos] 在 IO 线程执行
+     * 3. 成功后状态切到 [ExportState.Done]，UI 负责弹 Toast + 分享
+     * 4. 失败时状态切到 [ExportState.Error]
+     *
+     * 调用前需保证 [uiState] 中已有客户行（rows 非空），否则直接报错。
+     *
+     * @param dimension 匹配维度（序号 / 地址 / 借款人）
+     * @param keyword 关键词（空串匹配全部）
+     * @param format 输出格式（PDF / ZIP）
+     */
+    fun exportPhotos(dimension: ExportDimension, keyword: String, format: ExportFormat) {
+        val rows = uiState.value.rows
+        if (rows.isEmpty()) {
+            _exportState.value = ExportState.Error("请先导入客户清单")
+            return
+        }
+        viewModelScope.launch {
+            _exportState.value = ExportState.Exporting(current = 0, total = 0)
+            try {
+                val file = photoExporter.exportPhotos(
+                    context = context,
+                    rows = rows,
+                    dimension = dimension,
+                    keyword = keyword,
+                    format = format,
+                    onProgress = { current, total ->
+                        _exportState.value = ExportState.Exporting(current, total)
+                    },
+                )
+                if (file != null) {
+                    _exportState.value = ExportState.Done(file, file.length())
+                } else {
+                    _exportState.value = ExportState.Error("未找到匹配的照片")
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "导出照片失败")
+                _exportState.value = ExportState.Error(e.message ?: "导出失败")
+            }
+        }
+    }
+
+    /**
+     * 重置导出状态到 [ExportState.Idle]，便于下一次导出。
+     */
+    fun resetExportState() {
+        _exportState.value = ExportState.Idle
     }
 
     // ---- 内部辅助 ----
