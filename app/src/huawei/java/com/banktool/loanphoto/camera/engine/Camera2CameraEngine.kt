@@ -42,11 +42,13 @@ import kotlin.math.abs
  * 通过 [android.hardware.camera2.CameraCharacteristics.getPhysicalCameraIds]（API 28+）
  * 选择焦距最短的物理子相机，或回退到独立的 logical camera id，以实现真正的超广角拍摄。
  *
- * 广角检测采用双策略以最大化 Mate70 兼容性：
- * 1. 物理子相机策略：当 logical camera 暴露 >=2 个 physicalCameraId 时，选取焦距最短者，
+ * 广角检测采用双策略以最大化 Mate70 兼容性（优先独立逻辑 ID，回退物理子相机）：
+ * 1. 独立逻辑 ID 策略：扫描所有 logical camera id，若存在比主摄焦距更短的独立 logical camera，
+ *    则 [toggleWideAngle] 时直接 openCamera 该 id（不走 setPhysicalCameraId）。该策略在 Mate70
+ *    上更稳定，命中后即跳过策略 2。
+ * 2. 物理子相机策略：当 logical camera 暴露 >=2 个 physicalCameraId 时，选取焦距最短者，
  *    通过 [OutputConfiguration.setPhysicalCameraId] 让 logical camera 从该物理子相机取流。
- * 2. 独立逻辑 ID 策略：扫描所有 logical camera id，若存在比主摄焦距更短的独立 logical camera，
- *    则 [toggleWideAngle] 时直接 openCamera 该 id（不走 setPhysicalCameraId）。
+ *    仅当策略 1 未命中时回退使用（部分机型 setPhysicalCameraId 会话配置失败）。
  *
  * 线程模型：所有 Camera2 回调运行在后台 [bgHandler]；MutableStateFlow 线程安全，可在后台线程更新。
  */
@@ -115,6 +117,10 @@ class Camera2CameraEngine @Inject constructor(
 
     @Volatile
     private var sessionRebuilding: Boolean = false
+
+    /** 广角切换开启中标记：用于 onConfigureFailed 时回滚到普通会话，避免预览永久卡死。 */
+    @Volatile
+    private var pendingWideToggle: Boolean = false
 
     /** 生命周期观察者：DESTROYED 时释放相机资源。 */
     private val lifecycleObserver = object : LifecycleEventObserver {
@@ -236,6 +242,8 @@ class Camera2CameraEngine @Inject constructor(
         sessionRebuilding = true
         try {
             isWideActive = !isWideActive
+            // 开启广角时标记 pendingWideToggle，供 onConfigureFailed 回滚；关闭时保持 false（成功/失败时已清）
+            if (isWideActive) pendingWideToggle = true
             _zoomInfo.value = _zoomInfo.value.copy(isWideAngleActive = isWideActive)
 
             if (wideIsSeparateLogicalId) {
@@ -258,6 +266,7 @@ class Camera2CameraEngine @Inject constructor(
             Timber.e(e, "toggleWideAngle 失败")
             // 回滚状态
             isWideActive = !isWideActive
+            pendingWideToggle = false
             _zoomInfo.value = _zoomInfo.value.copy(isWideAngleActive = isWideActive)
         } finally {
             sessionRebuilding = false
@@ -350,8 +359,29 @@ class Camera2CameraEngine @Inject constructor(
             ?.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
             ?.minOrNull() ?: Float.MAX_VALUE
 
-        // 策略 1：物理子相机（API 28+）
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        // 策略 1：独立 logical camera id（任意 API，焦距比主摄更短）—— 优先策略，Mate70 上更稳定
+        // 先尝试独立逻辑 id，命中即跳过物理子相机策略，避免 setPhysicalCameraId 在 Mate70 上 onConfigureFailed
+        for (id in cm.cameraIdList) {
+            if (id == logicalCameraId) continue
+            try {
+                val ch = cm.getCameraCharacteristics(id)
+                val facing = ch.get(CameraCharacteristics.LENS_FACING)
+                if (facing != CameraCharacteristics.LENS_FACING_BACK) continue
+                val focals = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                val minF = focals?.minOrNull() ?: continue
+                if (minF < mainMinFocal) {
+                    widePhysicalId = id
+                    wideIsSeparateLogicalId = true
+                    Timber.i("检测到独立逻辑广角相机: %s (focal=%.2f < main=%.2f)", id, minF, mainMinFocal)
+                    break
+                }
+            } catch (e: Exception) {
+                Timber.w(e, "扫描独立逻辑相机失败: %s", id)
+            }
+        }
+
+        // 策略 2：物理子相机（API 28+）—— 仅当独立逻辑策略未命中时回退
+        if (widePhysicalId == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val physicalIds = currentCharacteristics?.getPhysicalCameraIds()
             if (physicalIds != null && physicalIds.size >= 2) {
                 var bestPhysicalId: String? = null
@@ -377,28 +407,6 @@ class Camera2CameraEngine @Inject constructor(
                     widePhysicalId = bestPhysicalId
                     wideIsSeparateLogicalId = false
                     Timber.i("检测到物理子相机广角: %s (focal=%.2f)", bestPhysicalId, bestFocal)
-                }
-            }
-        }
-
-        // 策略 2：独立 logical camera id（任意 API，焦距比主摄更短）
-        if (widePhysicalId == null) {
-            for (id in cm.cameraIdList) {
-                if (id == logicalCameraId) continue
-                try {
-                    val ch = cm.getCameraCharacteristics(id)
-                    val facing = ch.get(CameraCharacteristics.LENS_FACING)
-                    if (facing != CameraCharacteristics.LENS_FACING_BACK) continue
-                    val focals = ch.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                    val minF = focals?.minOrNull() ?: continue
-                    if (minF < mainMinFocal) {
-                        widePhysicalId = id
-                        wideIsSeparateLogicalId = true
-                        Timber.i("检测到独立逻辑广角相机: %s (focal=%.2f < main=%.2f)", id, minF, mainMinFocal)
-                        break
-                    }
-                } catch (e: Exception) {
-                    Timber.w(e, "扫描独立逻辑相机失败: %s", id)
                 }
             }
         }
@@ -489,15 +497,21 @@ class Camera2CameraEngine @Inject constructor(
 
                 override fun onDisconnected(camera: CameraDevice) {
                     Timber.e("CameraDevice onDisconnected: %s", cameraId)
-                    cameraDevice = null
-                    _cameraReady.value = false
+                    // 身份守卫：切到广角 logical 相机时，旧设备的迟到 onDisconnected 不能覆盖新设备
+                    if (cameraDevice === camera) {
+                        cameraDevice = null
+                        _cameraReady.value = false
+                    }
                     runCatching { camera.close() }
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
                     Timber.e("CameraDevice onError id=%s error=%d", cameraId, error)
-                    cameraDevice = null
-                    _cameraReady.value = false
+                    // 身份守卫：切到广角 logical 相机时，旧设备的迟到 onError 不能覆盖新设备
+                    if (cameraDevice === camera) {
+                        cameraDevice = null
+                        _cameraReady.value = false
+                    }
                     runCatching { camera.close() }
                 }
             }
@@ -520,20 +534,73 @@ class Camera2CameraEngine @Inject constructor(
         val device = cameraDevice ?: return
         val texture = textureView ?: return
         val st = texture.surfaceTexture ?: return
-        val pvSize = previewSize ?: jpegSize ?: Size(1920, 1440)
+
+        val usePhysicalSubCamera = isWideActive &&
+            !wideIsSeparateLogicalId &&
+            widePhysicalId != null &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+
+        // logical camera 的尺寸候选（非物理子相机分支沿用）
+        val logicalJpegSize = jpegSize ?: Size(1920, 1440)
+        val logicalPreviewSize = previewSize ?: jpegSize ?: Size(1920, 1440)
+        var pvSize = logicalPreviewSize
+        var jSize = logicalJpegSize
+
+        // 物理 sub-camera 取流时，logical camera 的 jpegSize/previewSize 未必被物理传感器支持，
+        // 需以物理子相机的 SCALER_STREAM_CONFIGURATION_MAP 为准，取两者公共支持的尺寸，避免 onConfigureFailed。
+        if (usePhysicalSubCamera) {
+            val wideId = widePhysicalId
+            if (wideId != null) {
+                try {
+                    val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                    val pch = cm.getCameraCharacteristics(wideId)
+                    val pMap = pch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                    val lMap = currentCharacteristics?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                    if (pMap != null && lMap != null) {
+                        val physJpeg = pMap.getOutputSizes(ImageFormat.JPEG)?.toSet() ?: emptySet()
+                        val physPreview = pMap.getOutputSizes(SurfaceTexture::class.java)?.toSet() ?: emptySet()
+                        val logJpeg = lMap.getOutputSizes(ImageFormat.JPEG)?.toSet() ?: emptySet()
+                        val logPreview = lMap.getOutputSizes(SurfaceTexture::class.java)?.toSet() ?: emptySet()
+
+                        // JPEG：公共 4:3 最大 → 保守尺寸（需物理支持）→ 物理 4:3 最大 → 沿用 logical
+                        val commonJpeg = physJpeg.intersect(logJpeg)
+                        jSize = pickJpegSize(commonJpeg.toTypedArray())
+                            ?: listOf(Size(1280, 960), Size(1920, 1080)).firstOrNull { physJpeg.contains(it) }
+                            ?: pickJpegSize(physJpeg.toTypedArray())
+                            ?: logicalJpegSize
+
+                        // Preview：公共 4:3 最大 → 保守尺寸（需物理支持）→ 物理 4:3 最大 → 沿用 logical
+                        val commonPreview = physPreview.intersect(logPreview)
+                        pvSize = pickPreviewSize(commonPreview.toTypedArray())
+                            ?: listOf(Size(1920, 1080), Size(1280, 960)).firstOrNull { physPreview.contains(it) }
+                            ?: pickPreviewSize(physPreview.toTypedArray())
+                            ?: logicalPreviewSize
+
+                        Timber.i(
+                            "物理子相机尺寸: jpeg=%s preview=%s (logical jpeg=%s preview=%s)",
+                            jSize, pvSize, logicalJpegSize, logicalPreviewSize,
+                        )
+                    }
+                } catch (e: Exception) {
+                    Timber.w(e, "读取物理子相机尺寸失败，沿用 logical 尺寸: jpeg=%s preview=%s", jSize, pvSize)
+                }
+            }
+        }
+
         try {
             st.setDefaultBufferSize(pvSize.width, pvSize.height)
             val preview = Surface(st)
             previewSurface = preview
 
             // 重建 ImageReader（尺寸可能因相机切换而变化）
-            val jSize = jpegSize ?: Size(1920, 1440)
             imageReader?.let { runCatching { it.close() } }
             imageReader = ImageReader.newInstance(jSize.width, jSize.height, ImageFormat.JPEG, 2)
             imageReader?.setOnImageAvailableListener({ reader -> handleImageAvailable(reader) }, bgHandler)
 
             val sessionStateCallback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
+                    // 广角会话配置成功：清除待回滚标记
+                    pendingWideToggle = false
                     captureSession = session
                     try {
                         startRepeating()
@@ -550,14 +617,34 @@ class Camera2CameraEngine @Inject constructor(
                     Timber.e("CaptureSession onConfigureFailed")
                     captureSession = null
                     _cameraReady.value = false
+                    if (pendingWideToggle) {
+                        // 广角会话配置失败：回滚到主摄普通会话，避免预览永久卡死
+                        pendingWideToggle = false
+                        isWideActive = false
+                        _zoomInfo.value = _zoomInfo.value.copy(isWideAngleActive = false)
+                        Timber.w("广角会话 onConfigureFailed，回滚到普通会话")
+                        // 若当前是物理子相机策略（设备未变），直接重建普通会话
+                        // 若是独立 logical 策略，wideId 打开失败 → 重新打开主摄 logicalCameraId
+                        // 防递归：pendingWideToggle 已置 false，若本次普通会话再失败不会二次回滚
+                        if (wideIsSeparateLogicalId) {
+                            runCatching { cameraDevice?.close() }
+                            cameraDevice = null
+                            // 重载主摄 characteristics：切广角时已被广角 logical 的尺寸/activeArray/zoom 覆盖，
+                            // 若不重载，回滚后的普通会话会沿用广角尺寸，可能再次 onConfigureFailed。
+                            runCatching {
+                                val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                                val mainCh = cm.getCameraCharacteristics(logicalCameraId)
+                                loadCharacteristicsFor(cm, logicalCameraId, mainCh)
+                            }
+                            openCamera(logicalCameraId) { createSession() }
+                        } else {
+                            createSession()
+                        }
+                    }
                 }
             }
 
             val readerSurface = imageReader!!.surface
-            val usePhysicalSubCamera = isWideActive &&
-                !wideIsSeparateLogicalId &&
-                widePhysicalId != null &&
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 val previewConfig = OutputConfiguration(preview)
