@@ -121,6 +121,14 @@ android {
             buildConfigField("String", "EXPIRY_DATE", "\"2099-12-31\"")
             buildConfigField("String", "LICENSED_DEVICE_ID_HASH", "\"${sha256("")}\"")
         }
+        create("huawei") {
+            dimension = "license"
+            buildConfigField("boolean", "IS_TRIAL", "false")
+            buildConfigField("String", "EXPIRY_DATE", "\"2099-12-31\"")
+            buildConfigField("String", "LICENSED_DEVICE_ID_HASH", "\"${sha256("")}\"")
+            // 华为专属版本：Camera2 真广角实现，versionName 单独标识
+            versionName = "4.1.0-huawei"
+        }
     }
 
     compileOptions {

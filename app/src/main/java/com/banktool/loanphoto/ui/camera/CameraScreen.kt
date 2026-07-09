@@ -148,8 +148,7 @@ fun CameraScreen(
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             // 相机预览
             CameraPreviewView(
-                imageCapture = viewModel.imageCapture,
-                onCameraReady = { camera -> viewModel.onCameraReady(camera) },
+                engine = viewModel.cameraEngine,
                 onZoomChange = { ratio -> viewModel.onZoomChange(ratio) },
                 modifier = Modifier.fillMaxSize(),
             )
@@ -185,12 +184,14 @@ fun CameraScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 // 缩放控制条（仅在设备支持缩放或广角时显示）
-                val showZoomControls = uiState.maxZoomRatio > 1.0f || uiState.minZoomRatio < 1.0f
+                val showZoomControls = uiState.maxZoomRatio > 1.0f || uiState.hasWideAngle
                 if (showZoomControls) {
                     ZoomControlBar(
                         zoomRatio = uiState.zoomRatio,
                         maxZoomRatio = uiState.maxZoomRatio,
                         minZoomRatio = uiState.minZoomRatio,
+                        hasWideAngle = uiState.hasWideAngle,
+                        isWideAngleActive = uiState.isWideAngleActive,
                         onZoomChange = viewModel::setZoom,
                         onToggleWideAngle = viewModel::toggleWideAngle,
                     )
@@ -341,13 +342,13 @@ private fun ZoomControlBar(
     zoomRatio: Float,
     maxZoomRatio: Float,
     minZoomRatio: Float,
+    hasWideAngle: Boolean,
+    isWideAngleActive: Boolean,
     onZoomChange: (Float) -> Unit,
     onToggleWideAngle: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val hasZoom = maxZoomRatio > 1.0f
-    val hasWideAngle = minZoomRatio < 1.0f
-    val isWideAngleActive = zoomRatio < 1.0f
 
     Column(
         modifier = modifier.fillMaxWidth(),

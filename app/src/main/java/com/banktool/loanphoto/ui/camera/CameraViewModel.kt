@@ -6,12 +6,10 @@ import android.content.Context
 import android.os.Build
 import android.provider.MediaStore
 import android.widget.Toast
-import androidx.camera.core.Camera
-import androidx.camera.core.ImageCapture
-import androidx.camera.core.ImageCaptureException
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.banktool.loanphoto.camera.engine.CameraEngine
 import com.banktool.loanphoto.data.camera.LocationResult
 import com.banktool.loanphoto.data.camera.LocationService
 import com.banktool.loanphoto.data.camera.ThumbnailGenerator
@@ -32,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -66,6 +65,14 @@ data class CameraUiState(
     val maxZoomRatio: Float = 1f,
     val minZoomRatio: Float = 1f,
     /**
+     * 设备是否支持真实广角（CameraX 后端 = minZoomRatio < 1.0；Camera2 后端由实现判定）。
+     */
+    val hasWideAngle: Boolean = false,
+    /**
+     * 当前是否处于广角态（由 cameraEngine.zoomInfo.isWideAngleActive 驱动）。
+     */
+    val isWideAngleActive: Boolean = false,
+    /**
      * 闪光灯模式：0=关闭/OFF, 1=自动/AUTO, 2=常亮/TORCH, 3=开启/ON。
      */
     val flashMode: Int = 0,
@@ -75,9 +82,9 @@ data class CameraUiState(
  * 相机 ViewModel。
  *
  * 职责：
- * 1. 持有 [ImageCapture] use case（@Volatile 供 Composable 引用）
+ * 1. 持有 [CameraEngine]（由 Hilt 按 flavor 注入：trial/full=CameraX，huawei=Camera2）
  * 2. 维护当前 [PhotoType]、主 [CustomerRow]、多选 [CustomerRow] 列表
- * 3. 拍照触发：takePicture -> 落盘 -> 水印 -> 缩略图 -> markPhoto/markPhotoBatch
+ * 3. 拍照触发：engine.captureToFile -> 落盘 -> 水印 -> 缩略图 -> markPhoto/markPhotoBatch
  * 4. 持久化 [CameraSession]（拍照前 save，完成或退出后 clear）
  * 5. 多选计数：主 key 走 [ProgressRepository.markPhoto]，其余走 [ProgressRepository.markPhotoBatch]
  *
@@ -95,27 +102,39 @@ class CameraViewModel @Inject constructor(
     private val namingRuleGenerator: NamingRuleGenerator,
     private val excelDataIndexRepository: ExcelDataIndexRepository,
     private val watermarkConfigRepository: WatermarkConfigRepository,
+    val cameraEngine: CameraEngine,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
 
-    /** ImageCapture 实例；由 Composable 持有引用以便绑定到 ProcessCameraProvider。 */
-    val imageCapture: ImageCapture = ImageCapture.Builder()
-        .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-        .setTargetAspectRatio(androidx.camera.core.AspectRatio.RATIO_4_3)
-        .build()
-
-    /** 主线程 Executor（takePicture 回调）。 */
+    /** 主线程 Executor（拍照回调）。 */
     val mainExecutor: Executor by lazy { ContextCompat.getMainExecutor(app) }
 
-    /**
-     * 由 CameraPreviewView 绑定完成后回调注入的 [Camera] 对象。
-     * 用于读取 zoomState（min/max/当前）和控制 cameraControl.setZoomRatio。
-     */
-    private var camera: Camera? = null
-
     private val timestampFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.getDefault())
+
+    init {
+        // 收集引擎缩放信息 → 同步 UiState（zoomRatio/max/min/hasWideAngle/isWideAngleActive）
+        viewModelScope.launch {
+            cameraEngine.zoomInfo.collect { zi ->
+                _uiState.update {
+                    it.copy(
+                        zoomRatio = zi.zoomRatio,
+                        maxZoomRatio = zi.maxZoomRatio,
+                        minZoomRatio = zi.minZoomRatio,
+                        hasWideAngle = zi.hasWideAngle,
+                        isWideAngleActive = zi.isWideAngleActive,
+                    )
+                }
+            }
+        }
+        // 收集引擎就绪状态 → 同步 UiState.cameraReady
+        viewModelScope.launch {
+            cameraEngine.cameraReady.collect { ready ->
+                _uiState.update { it.copy(cameraReady = ready) }
+            }
+        }
+    }
 
     /**
      * 初始化拍照上下文：注入选中行、Excel URI。
@@ -158,18 +177,12 @@ class CameraViewModel @Inject constructor(
     /**
      * 设置闪光灯模式（0=OFF, 1=AUTO, 2=TORCH 常亮, 3=ON）。
      *
-     * - 模式 2（TORCH 常亮）会立即调用 [Camera.cameraControl.enableTorch] 打开补光灯，
-     *   并在 [onCameraReady] 时根据当前 flashMode 自动恢复常亮态。
-     * - 切换到其它模式时关闭补光灯（仅拍照瞬间由 ImageCapture.flashMode 控制）。
+     * - 模式 2（TORCH 常亮）由引擎立即打开补光灯，并在相机绑定后自动恢复常亮态。
+     * - 切换到其它模式时关闭补光灯（仅拍照瞬间由引擎按 flashMode 处理）。
      */
     fun setFlashMode(mode: Int) {
         _uiState.update { it.copy(flashMode = mode) }
-        val cam = camera
-        if (cam != null) {
-            // 切换到 TORCH（2）开灯；其它模式关灯，交给 ImageCapture 在拍照瞬间处理
-            val enableTorch = mode == 2
-            cam.cameraControl.enableTorch(enableTorch)
-        }
+        cameraEngine.setFlashMode(mode)
     }
 
     /** 关闭画廊。 */
@@ -188,61 +201,20 @@ class CameraViewModel @Inject constructor(
     }
 
     /**
-     * 相机绑定完成回调：保存 [Camera] 引用、读取 zoomState 初始化缩放范围、标记 cameraReady。
-     *
-     * - 读取 [Camera.cameraInfo.zoomState] 获取 minZoomRatio / maxZoomRatio / 当前 zoomRatio
-     * - minZoomRatio < 1.0 表示设备支持广角（或虚拟广角裁剪）
-     * - maxZoomRatio > 1.0 表示设备支持数字/光学变焦
-     */
-    fun onCameraReady(camera: Camera) {
-        this.camera = camera
-        updateZoomInfo(camera)
-        // 若当前处于常亮模式（flashMode==2），相机绑定后立即打开补光灯
-        if (_uiState.value.flashMode == 2) {
-            camera.cameraControl.enableTorch(true)
-        }
-        _uiState.update { it.copy(cameraReady = true) }
-    }
-
-    /**
-     * 从 [camera.cameraInfo.zoomState] 读取缩放范围，更新 UiState。
-     *
-     * 在 [onCameraReady] 时调用一次；zoomState 是 LiveData，此处的 .value 在绑定后立即可用。
-     */
-    fun updateZoomInfo(camera: Camera) {
-        val zoomState = camera.cameraInfo.zoomState.value
-        if (zoomState != null) {
-            _uiState.update {
-                it.copy(
-                    maxZoomRatio = zoomState.maxZoomRatio,
-                    minZoomRatio = zoomState.minZoomRatio,
-                    zoomRatio = zoomState.zoomRatio,
-                )
-            }
-        }
-    }
-
-    /**
      * 设置缩放倍率（由底部滑块或广角按钮调用）。
      *
-     * - 调用 [Camera.cameraControl.setZoomRatio]（CameraX 异步执行）
-     * - 同时更新 UiState.zoomRatio 供 UI 即时反映
-     * - ratio 会被 clamp 到 [minZoomRatio, maxZoomRatio] 范围内
+     * 引擎负责 clamp 到 [minZoomRatio, maxZoomRatio] 并同步 zoomInfo；
+     * UiState.zoomRatio 由 zoomInfo collector 自动更新。
      */
     fun setZoom(ratio: Float) {
-        val cam = camera ?: return
-        val zoomState = cam.cameraInfo.zoomState.value
-        val minZoom = zoomState?.minZoomRatio ?: 1f
-        val maxZoom = zoomState?.maxZoomRatio ?: 1f
-        val clampedRatio = ratio.coerceIn(minZoom, maxZoom)
-        cam.cameraControl.setZoomRatio(clampedRatio)
-        _uiState.update { it.copy(zoomRatio = clampedRatio) }
+        cameraEngine.setZoom(ratio)
     }
 
     /**
      * 双指缩放回调（由 CameraPreviewView 的 detectTransformGestures 调用）。
      *
-     * CameraPreviewView 已直接调用 cameraControl.setZoomRatio，此处仅同步 UiState。
+     * CameraPreviewView 已通过 engine.setZoom 更新 zoomInfo，此处额外同步 UiState.zoomRatio
+     * 以提升滑块响应的即时感（collector 也会随后更新，幂等）。
      */
     fun onZoomChange(ratio: Float) {
         _uiState.update { it.copy(zoomRatio = ratio) }
@@ -251,17 +223,12 @@ class CameraViewModel @Inject constructor(
     /**
      * 切换广角 / 1x。
      *
-     * - 当前 zoomRatio < 1.0（广角态）→ 切回 1.0x
-     * - 当前 zoomRatio >= 1.0 → 切到 minZoomRatio（如 0.5x 广角）
-     * - 设备不支持广角（minZoomRatio >= 1.0）时此方法不应被调用（UI 会隐藏按钮）
+     * - 当前处于广角态（isWideAngleActive）→ 切回 1.0x
+     * - 当前非广角态 → 切到 minZoomRatio（如 0.5x 广角）
+     * - 设备不支持广角时此方法不应被调用（UI 会隐藏按钮）
      */
     fun toggleWideAngle() {
-        val cam = camera ?: return
-        val zoomState = cam.cameraInfo.zoomState.value ?: return
-        val minZoom = zoomState.minZoomRatio
-        val currentZoom = _uiState.value.zoomRatio
-        val targetZoom = if (currentZoom < 1.0f) 1.0f else minZoom
-        setZoom(targetZoom)
+        cameraEngine.toggleWideAngle()
     }
 
     /**
@@ -294,16 +261,17 @@ class CameraViewModel @Inject constructor(
      * 触发拍照。
      *
      * 流程：
-     * 1. 校验 [ImageCapture] 与主 key 就绪
+     * 1. 校验主 key 就绪
      * 2. 准备输出文件 `photos/<progressKey>/<fileName>.jpg`
      *    （文件名由 [NamingRuleGenerator] 按用户配置生成，全 NONE 时回退 IMG_<timestamp>.jpg）
      * 3. saveCameraSession（带 photo_path/photo_launch_time，防进程死亡）
-     * 4. ImageCapture.takePicture(OutputFileOptions, mainExecutor, callback)
+     * 4. cameraEngine.captureToFile(outputFile, mainExecutor, onSaved, onError)
+     *    （闪光策略由引擎按 flashMode 内部处理）
      * 5. 成功回调 [onImageSaved]：取位置 -> 水印 -> 缩略图 -> markPhoto -> Toast
      * 6. 失败回调 [onCaptureError]：Toast + Timber
      *
      * 因 [NamingConfigRepository.getConfig] 为 suspend，文件名生成在协程中完成，
-     * 随后切回主线程调用 [captureToFile]。
+     * 随后切回主线程调用 [CameraEngine.captureToFile]。
      */
     fun takePhoto() {
         val primary = _uiState.value.primaryRow ?: run {
@@ -320,16 +288,8 @@ class CameraViewModel @Inject constructor(
         val photosDir = File(ctx.getExternalFilesDir(null), "photos/${primary.progressKey}")
         if (!photosDir.exists()) photosDir.mkdirs()
 
-        // 根据 flashMode 设置 ImageCapture 闪光灯模式：
-        // 0→OFF, 1→AUTO, 2→TORCH 常亮（enableTorch 由 onCameraReady/setFlashMode 维持，
-        //    拍照瞬间仍用 ON 确保补光），3→ON
-        val flashMode = _uiState.value.flashMode
-        imageCapture.flashMode = when (flashMode) {
-            1 -> ImageCapture.FLASH_MODE_AUTO
-            2 -> ImageCapture.FLASH_MODE_ON // 常亮：torch 已开，拍照用 ON
-            3 -> ImageCapture.FLASH_MODE_ON
-            else -> ImageCapture.FLASH_MODE_OFF
-        }
+        // 闪光灯模式由 cameraEngine 在 captureToFile 内部按 flashMode 选用：
+        // 0→OFF, 1→AUTO, 2→TORCH 常亮（torch 已由 setFlashMode 打开，拍照用 ON 确保补光），3→ON
 
         _uiState.update { it.copy(isCapturing = true, lastSavedPath = null) }
 
@@ -354,11 +314,10 @@ class CameraViewModel @Inject constructor(
                 mediaUri = null,
             )
 
-            captureToFile(
-                imageCapture = imageCapture,
+            cameraEngine.captureToFile(
                 outputFile = outputFile,
                 executor = mainExecutor,
-                onImageSaved = { saved -> onImageSaved(saved, primary) },
+                onSaved = { saved -> onImageSaved(saved, primary) },
                 onError = { exc -> onCaptureError(exc) },
             )
         }
@@ -551,9 +510,9 @@ class CameraViewModel @Inject constructor(
         }
     }
 
-    /** 拍照失败回调。 */
-    private fun onCaptureError(exc: ImageCaptureException) {
-        Timber.e(exc, "拍照失败 code=%d", exc.imageCaptureError)
+    /** 拍照失败回调（CameraX 后端为 ImageCaptureException，Camera2 后端为其它 Throwable）。 */
+    private fun onCaptureError(exc: Throwable) {
+        Timber.e(exc, "拍照失败: %s", exc.message)
         _uiState.update {
             it.copy(
                 isCapturing = false,
@@ -664,9 +623,9 @@ class CameraViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        // 注意：ImageCapture 没有 unbindAll；ProcessCameraProvider 在 Lifecycle destroy
-        // 时会自动 unbind。这里仅释放相机内部回调资源。
-        // 如需主动 unbind，需通过 ProcessCameraProvider.getInstance(ctx).get().unbindAll()。
+        // 释放引擎资源。CameraX 后端为 no-op（ProcessCameraProvider 在 Lifecycle destroy 时
+        // 自动 unbind）；Camera2 后端由实现自行关闭 camera/session。
+        cameraEngine.release()
     }
 
     private companion object {
