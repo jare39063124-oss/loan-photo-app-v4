@@ -95,8 +95,9 @@ class ExcelWriter @Inject constructor(
                     }
                 }
                 true
-            } catch (e: Exception) {
-                Timber.e(e, "ExcelWriter: 写入备注失败, uri=%s", uri)
+            } catch (t: Throwable) {
+                // 捕获 Error（如 NoClassDefFoundError）避免闪退，降级为写入失败提示
+                Timber.e(t, "ExcelWriter: 写入备注失败, uri=%s", uri)
                 false
             }
         }
@@ -155,8 +156,8 @@ class ExcelWriter @Inject constructor(
 
                     newRowNum
                 }
-            } catch (e: Exception) {
-                Timber.e(e, "ExcelWriter appendRow: 追加失败, uri=%s", uri)
+            } catch (t: Throwable) {
+                Timber.e(t, "ExcelWriter appendRow: 追加失败, uri=%s", uri)
                 -1
             }
         }

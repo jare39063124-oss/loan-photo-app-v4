@@ -33,51 +33,59 @@ class ExcelDataSource @Inject constructor(
      * @param uri Excel 文件的 content URI 字符串
      */
     suspend fun readExcel(uri: String): List<CustomerRow> = withContext(Dispatchers.IO) {
-        val rows = mutableListOf<CustomerRow>()
-        val parsed = context.contentResolver.openInputStream(Uri.parse(uri))?.use { input ->
-            XSSFWorkbook(input).use { workbook ->
-                val sheet = workbook.getSheetAt(0)
-                    ?: error("Excel 文件无工作表")
-                val headerRow = sheet.getRow(0)
-                val (startRow, colMap) = parseHeader(headerRow)
-                val lastRow = sheet.lastRowNum
-                for (i in startRow until lastRow + 1) {
-                    val row = sheet.getRow(i) ?: continue
-                    val serial = getCellString(row, colMap["serial"] ?: 0)
-                    val borrower = getCellString(row, colMap["borrower"] ?: 1)
-                    val addrGeneral = getCellString(row, colMap["addrGeneral"] ?: 2)
-                    val addrDetail = getCellString(row, colMap["addrDetail"] ?: 3)
-                    val propertyType = getCellString(row, colMap["propertyType"] ?: 4)
-                    val remark = getCellString(row, colMap["remark"] ?: 5)
-                    // 跳过 A-E 全空行
-                    if (serial.isBlank() && borrower.isBlank() &&
-                        addrGeneral.isBlank() && addrDetail.isBlank() &&
-                        propertyType.isBlank()
-                    ) {
-                        continue
+        try {
+            val rows = mutableListOf<CustomerRow>()
+            val parsed = context.contentResolver.openInputStream(Uri.parse(uri))?.use { input ->
+                XSSFWorkbook(input).use { workbook ->
+                    val sheet = workbook.getSheetAt(0)
+                        ?: error("Excel 文件无工作表")
+                    val headerRow = sheet.getRow(0)
+                    val (startRow, colMap) = parseHeader(headerRow)
+                    val lastRow = sheet.lastRowNum
+                    for (i in startRow until lastRow + 1) {
+                        val row = sheet.getRow(i) ?: continue
+                        val serial = getCellString(row, colMap["serial"] ?: 0)
+                        val borrower = getCellString(row, colMap["borrower"] ?: 1)
+                        val addrGeneral = getCellString(row, colMap["addrGeneral"] ?: 2)
+                        val addrDetail = getCellString(row, colMap["addrDetail"] ?: 3)
+                        val propertyType = getCellString(row, colMap["propertyType"] ?: 4)
+                        val remark = getCellString(row, colMap["remark"] ?: 5)
+                        // 跳过 A-E 全空行
+                        if (serial.isBlank() && borrower.isBlank() &&
+                            addrGeneral.isBlank() && addrDetail.isBlank() &&
+                            propertyType.isBlank()
+                        ) {
+                            continue
+                        }
+                        val progressKey = ProgressKeyUtil.progressKey(
+                            borrower, addrGeneral + addrDetail,
+                        )
+                        rows.add(
+                            CustomerRow(
+                                rowIndex = i,
+                                serial = serial,
+                                borrower = borrower,
+                                addrGeneral = addrGeneral,
+                                addrDetail = addrDetail,
+                                propertyType = propertyType,
+                                remark = remark,
+                                progressKey = progressKey,
+                            ),
+                        )
                     }
-                    val progressKey = ProgressKeyUtil.progressKey(
-                        borrower, addrGeneral + addrDetail,
-                    )
-                    rows.add(
-                        CustomerRow(
-                            rowIndex = i,
-                            serial = serial,
-                            borrower = borrower,
-                            addrGeneral = addrGeneral,
-                            addrDetail = addrDetail,
-                            propertyType = propertyType,
-                            remark = remark,
-                            progressKey = progressKey,
-                        ),
-                    )
                 }
             }
+            if (parsed == null) {
+                Timber.w("ExcelDataSource: openInputStream 返回 null, uri=%s", uri)
+            }
+            rows
+        } catch (t: Throwable) {
+            // 捕获 POI 抛出的 Error（NoClassDefFoundError / ExceptionInInitializerError 等），
+            // 转换为受控异常向上传递，由 CustomerListViewModel.loadExcel 的 catch(Exception) 接住，
+            // 显示 UI 错误提示而非闪退。
+            Timber.e(t, "ExcelDataSource: 读取 Excel 失败, uri=%s", uri)
+            throw IllegalStateException("加载 Excel 失败：${t.message ?: t.javaClass.simpleName}", t)
         }
-        if (parsed == null) {
-            Timber.w("ExcelDataSource: openInputStream 返回 null, uri=%s", uri)
-        }
-        rows
     }
 
     /**

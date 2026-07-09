@@ -57,8 +57,8 @@ android {
         applicationId = "com.banktool.loanphoto"
         minSdk = 26  // Apache POI 5.x requires API 26 (MethodHandle); all target devices are API 30+
         targetSdk = 35
-        versionCode = 9
-        versionName = "4.0.8"
+        versionCode = 10
+        versionName = "4.0.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -91,6 +91,17 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            // 用 release keystore 签名：debug 默认用 debug 签名，会与 BuildConfig.EXPECTED_SIGNING_HASH
+            // （release 证书哈希）不匹配而被 SecurityChecker 拦在 LockScreen。release 签名后即可正常启动。
+            signingConfig = signingConfigs.getByName("release")
+        }
+        // plain: 紧急可用普通版 —— 关闭 R8/混淆（不抗逆向），用 release keystore 签名
+        // 使 SecurityChecker 签名校验通过、不被 LockScreen 拦截；Apache POI 无 R8 干扰正常工作
+        create("plain") {
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("release")
+            matchingFallbacks += listOf("release")
         }
     }
 

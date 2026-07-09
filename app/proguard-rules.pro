@@ -14,6 +14,14 @@
 -keep class org.apache.xmlbeans.** { *; }
 -keep class org.openxmlformats.** { *; }
 -keep class schemaorg_apache_xmlbeans.** { *; }
+-keep class org.apache.commons.collections.** { *; }
+-keep class org.apache.commons.collections4.** { *; }
+-keep class com.graphbuilder.** { *; }
+# commons-compress 是 POI 的可选传递依赖，其 asm/xz 子模块在 classpath 缺失；
+# 不 -keep compress（避免 R8 强保留引用缺失类的代码），仅 dontwarn 抑制缺失类告警
+-dontwarn org.objectweb.asm.**
+-dontwarn org.tukaani.xz.**
+-dontwarn org.apache.commons.compress.**
 
 # --- Retrofit ---
 -dontwarn retrofit2.**
@@ -74,5 +82,5 @@
 -dontwarn javax.lang.**
 
 # --- R8 full mode optimizations ---
+# 注：移除 -repackageclasses，避免破坏 Apache POI xmlbeans 按名加载机制（v4.0.8 打开 Excel 闪退根因）
 -allowaccessmodification
--repackageclasses
