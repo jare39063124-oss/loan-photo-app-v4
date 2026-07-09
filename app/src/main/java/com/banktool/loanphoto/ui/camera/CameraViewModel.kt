@@ -412,8 +412,8 @@ class CameraViewModel @Inject constructor(
                 val primaryKey = primary.progressKey
                 val photoType = _uiState.value.currentPhotoType.displayName
 
-                // 1. 位置（失败时返回 null，触发「定位失败」水印，不再兜底伪造坐标）
-                val location: LocationResult? = withContext(Dispatchers.IO) {
+                // 1. 位置：优先实时定位；失败时回退 10s 内历史定位（地下/无信号场景兜底）
+                var location: LocationResult? = withContext(Dispatchers.IO) {
                     try {
                         locationService.getCurrentLocation()
                     } catch (e: Exception) {
@@ -421,24 +421,49 @@ class CameraViewModel @Inject constructor(
                         null
                     }
                 }
-                // 同步更新定位失败状态（供 Snackbar 显示）
+                var locationFallback = false
+                if (location == null) {
+                    // 兜底：取 10s 内最近一次有效定位，避免地下拍照等满 15s 超时
+                    location = withContext(Dispatchers.IO) {
+                        try {
+                            locationService.getRecentWithin(10_000)
+                        } catch (e: Exception) {
+                            Timber.w(e, "兜底历史定位查询失败")
+                            null
+                        }
+                    }
+                    if (location != null) {
+                        locationFallback = true
+                        Timber.w(
+                            "LocationService 实时定位失败，使用 10s 内历史定位兜底 fallback=true age=%dms",
+                            System.currentTimeMillis() - location.timestamp,
+                        )
+                    }
+                }
+                // 同步更新定位失败状态（供 Snackbar 显示）；兜底命中视为定位成功
                 _uiState.update { it.copy(locationFailed = location == null) }
 
-                // 2. 水印内容（location 为 null 时内部自动渲染「定位失败」段）
+                // 2. 读取持久化水印配置（含 4 个内容显示开关），按开关过滤水印段
+                val savedConfig = watermarkConfigRepository.configFlow().first()
                 val segments = watermarkGenerator.buildSegments(
                     captureTimeMillis = System.currentTimeMillis(),
                     location = location,
                     serial = primary.serial.takeIf { it.isNotBlank() },
+                    showDate = savedConfig.showDate,
+                    showSerial = savedConfig.showSerial,
+                    showAddress = savedConfig.showAddress,
+                    showLatlng = savedConfig.showLatlng,
                 )
-                // 读取持久化水印配置（position/fontSize/opacity/enabled），
-                // segments 由本次拍照实时生成，覆盖配置中的空 segments。
-                val savedConfig = watermarkConfigRepository.configFlow().first()
                 val config = WatermarkConfig(
                     segments = segments,
                     position = savedConfig.position,
                     fontSize = savedConfig.fontSize,
                     opacity = savedConfig.opacity,
                     enabled = savedConfig.enabled,
+                    showDate = savedConfig.showDate,
+                    showSerial = savedConfig.showSerial,
+                    showAddress = savedConfig.showAddress,
+                    showLatlng = savedConfig.showLatlng,
                 )
 
                 // 3. 绘制水印并覆盖保存（同一路径）

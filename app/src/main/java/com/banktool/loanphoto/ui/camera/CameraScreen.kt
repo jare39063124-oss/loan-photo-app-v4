@@ -331,8 +331,9 @@ private fun CustomerInfoPill(
  * - [minZoomRatio] < 1.0 时显示广角按钮（点击在 0.5x / 1x 间切换）
  * - [maxZoomRatio] > 1.0 时显示滑块（范围 1.0 ~ maxZoomRatio）
  * - 滑块值会被 clamp 到 [1.0, maxZoomRatio]；广角态（zoom < 1.0）时滑块显示在 1.0 位置
- * - 广角按钮与滑块在同一 Row 内水平并排排列（spacedBy 8.dp），
- *   广角按钮固定宽度 36dp，滑块 weight(1f) 自适应剩余空间，确保窄屏不溢出
+ * - 广角按钮为长方形（72x36dp、6dp 圆角），与缩放滑杆在 Column 内垂直堆叠，
+ *   spacedBy 8.dp，整体水平居中；缩放滑杆 Row 内 Slider 用 weight(1f) 自适应剩余空间，
+ *   倍率文字固定宽度 44dp，确保窄屏不溢出
  * - 两者均不满足时整个 [ZoomControlBar] 不应被调用（由父 Composable 判断）
  */
 @Composable
@@ -348,21 +349,21 @@ private fun ZoomControlBar(
     val hasWideAngle = minZoomRatio < 1.0f
     val isWideAngleActive = zoomRatio < 1.0f
 
-    Row(
+    Column(
         modifier = modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // 广角切换按钮（仅当设备支持广角时显示）。固定宽度 36dp，文案「广角:开/关」
+        // 广角切换按钮（仅当设备支持广角时显示）。长方形 72x36dp、6dp 圆角，文案「广角:开/关」
         if (hasWideAngle) {
             Surface(
-                shape = CircleShape,
+                shape = RoundedCornerShape(6.dp),
                 color = if (isWideAngleActive) Accent else Color(0xCC404040),
-                modifier = Modifier.size(36.dp),
+                modifier = Modifier.height(36.dp).width(72.dp),
             ) {
                 IconButton(
                     onClick = onToggleWideAngle,
-                    modifier = Modifier.size(36.dp),
+                    modifier = Modifier.fillMaxSize(),
                 ) {
                     Text(
                         text = if (isWideAngleActive) "广角:开" else "广角:关",
@@ -375,21 +376,27 @@ private fun ZoomControlBar(
             }
         }
 
-        // 缩放滑块（仅当设备支持变焦时显示）。weight(1f) 自适应剩余空间
+        // 缩放滑杆（仅当设备支持变焦时显示）。内层 Row：Slider weight(1f) 自适应 + 倍率文字
         if (hasZoom) {
-            Slider(
-                value = zoomRatio.coerceIn(1.0f, maxZoomRatio),
-                onValueChange = onZoomChange,
-                valueRange = 1.0f..maxZoomRatio,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = "%.1fx".format(zoomRatio),
-                color = Color.White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.width(44.dp),
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Slider(
+                    value = zoomRatio.coerceIn(1.0f, maxZoomRatio),
+                    onValueChange = onZoomChange,
+                    valueRange = 1.0f..maxZoomRatio,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = "%.1fx".format(zoomRatio),
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.width(44.dp),
+                )
+            }
         }
     }
 }

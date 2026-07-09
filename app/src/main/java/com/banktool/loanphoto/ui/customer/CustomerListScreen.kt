@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -422,8 +423,7 @@ fun CustomerListScreen(
                 onToggleSelectAll = viewModel::toggleSelectAll,
             )
 
-            // 状态条
-            StatusBar(uiState = uiState)
+            Spacer(modifier = Modifier.height(4.dp))
 
             // 添加查勘条目按钮（仅在有数据时显示，避免无文件时点击无响应）
             if (uiState.rows.isNotEmpty()) {
@@ -445,6 +445,9 @@ fun CustomerListScreen(
                     }
                 }
             }
+
+            // 状态条
+            StatusBar(uiState = uiState)
 
             // 列表 / 空态 / 加载态
             Box(modifier = Modifier.fillMaxSize()) {

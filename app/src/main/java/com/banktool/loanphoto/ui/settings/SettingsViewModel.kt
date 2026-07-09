@@ -29,7 +29,8 @@ import javax.inject.Inject
  * 3. 生成实时预览文件名 [previewFileName]
  * 4. 暴露水印配置 [watermarkConfig]（DataStore 持久化，实时响应）
  * 5. 提供水印设置入口 [setWatermarkEnabled] / [setWatermarkFontSize] /
- *    [setWatermarkPosition] / [setWatermarkOpacity]
+ *    [setWatermarkPosition] / [setWatermarkOpacity] /
+ *    [setShowDate] / [setShowSerial] / [setShowAddress] / [setShowLatlng]
  *
  * 注入 [NamingConfigRepository]、[NamingRuleGenerator] 与 [WatermarkConfigRepository]（均 @Singleton）。
  */
@@ -78,6 +79,26 @@ class SettingsViewModel @Inject constructor(
     /** 设置水印不透明度。 */
     fun setWatermarkOpacity(v: Float) {
         viewModelScope.launch { watermarkConfigRepository.setOpacity(v) }
+    }
+
+    /** 设置是否显示拍摄日期段。 */
+    fun setShowDate(v: Boolean) {
+        viewModelScope.launch { watermarkConfigRepository.setShowDate(v) }
+    }
+
+    /** 设置是否显示序号段。 */
+    fun setShowSerial(v: Boolean) {
+        viewModelScope.launch { watermarkConfigRepository.setShowSerial(v) }
+    }
+
+    /** 设置是否显示地址段。 */
+    fun setShowAddress(v: Boolean) {
+        viewModelScope.launch { watermarkConfigRepository.setShowAddress(v) }
+    }
+
+    /** 设置是否显示经纬度段。 */
+    fun setShowLatlng(v: Boolean) {
+        viewModelScope.launch { watermarkConfigRepository.setShowLatlng(v) }
     }
 
     /**

@@ -67,6 +67,15 @@ class LocationService @Inject constructor(
     private var cached: LocationResult? = null
 
     /**
+     * 有界位置历史（最新在尾）。用于 getCurrentLocation 失败时兜底。
+     *
+     * - 容量上限 [MAX_HISTORY]，每次写入后 trimToSize
+     * - 写入时同步清理年龄超过 [HISTORY_MAX_AGE_MS] 的过期条目
+     * - 纯内存结构，不持久化，重启后为空
+     */
+    private val history: ArrayDeque<LocationResult> = ArrayDeque()
+
+    /**
      * 获取当前位置。优先返回缓存（5 分钟内）。
      *
      * - GMS 可用时走 [FusedLocationProviderClient]
@@ -117,7 +126,52 @@ class LocationService @Inject constructor(
             timestamp = System.currentTimeMillis(),
         )
         cached = result
+        recordHistory(result)
         result
+    }
+
+    /**
+     * 记录一条定位到历史，并清理过期/超量条目。
+     * 必须在 synchronized(history) 块内调用或由单一调用方调用（getCurrentLocation 在 Dispatchers.IO）。
+     */
+    private fun recordHistory(result: LocationResult) {
+        val now = System.currentTimeMillis()
+        synchronized(history) {
+            // 清理年龄超过 HISTORY_MAX_AGE_MS 的过期条目
+            history.removeAll { now - it.timestamp > HISTORY_MAX_AGE_MS }
+            history.addLast(result)
+            // 容量上限裁剪（保留最新 MAX_HISTORY 条）
+            while (history.size > MAX_HISTORY) {
+                history.removeFirst()
+            }
+        }
+    }
+
+    /**
+     * 返回历史中最新一条且年龄 ≤ [maxAgeMs] 的定位；无则返回 null。
+     *
+     * 用于 [getCurrentLocation] 失败（如地下无信号）时的兜底：调用方可用最近一次有效定位
+     * 代替 null，避免水印显示「定位失败」、GPS EXIF 缺失。
+     *
+     * @param maxAgeMs 最大可接受年龄（毫秒），拍照兜底建议 10_000（10 秒）
+     */
+    suspend fun getRecentWithin(maxAgeMs: Long): LocationResult? = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        synchronized(history) {
+            // 从最新（尾，索引 size-1）向最旧（头，索引 0）倒序遍历，
+            // 返回第一条 age ∈ 0..maxAgeMs 的记录。kotlin.collections.ArrayDeque
+            // 支持 indexed get，无 descendingIterator，故用 downTo 索引遍历。
+            var found: LocationResult? = null
+            for (i in history.size - 1 downTo 0) {
+                val r = history[i]
+                val age = now - r.timestamp
+                if (age in 0..maxAgeMs) {
+                    found = r
+                    break
+                }
+            }
+            found
+        }
     }
 
     /**
@@ -222,10 +276,13 @@ class LocationService @Inject constructor(
     /** 清除位置缓存（例如用户手动刷新场景）。 */
     fun clearCache() {
         cached = null
+        synchronized(history) { history.clear() }
     }
 
     private companion object {
         const val CACHE_TTL_MS = 5L * 60 * 1000 // 5 分钟
         const val LOCATION_TIMEOUT_MS = 15000L // 15 秒超时
+        const val MAX_HISTORY = 5 // 位置历史容量上限
+        const val HISTORY_MAX_AGE_MS = 60_000L // 历史最大年龄 60 秒，超过则清理
     }
 }

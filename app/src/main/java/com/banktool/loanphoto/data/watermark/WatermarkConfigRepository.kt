@@ -22,11 +22,12 @@ import javax.inject.Singleton
 /**
  * 水印配置仓库。
  *
- * 使用 [preferencesDataStore] 持久化水印 4 项配置：
+ * 使用 [preferencesDataStore] 持久化水印 8 项配置：
  * - enabled（启用水印，默认 true）
  * - fontSize（字号，默认 [WatermarkFontSize.MEDIUM]）
  * - position（位置，默认 [WatermarkPosition.BOTTOM_RIGHT]）
  * - opacity（不透明度，默认 0.7f）
+ * - showDate / showSerial / showAddress / showLatlng（水印内容逐项显示开关，默认全 true）
  *
  * `segments` 字段不在持久化范围（由 [com.banktool.loanphoto.data.camera.WatermarkGenerator]
  * 在拍照时实时构建），读取配置时返回空列表，由调用方覆盖。
@@ -60,6 +61,10 @@ class WatermarkConfigRepository @Inject constructor(
                 ?.let { runCatching { WatermarkPosition.valueOf(it) }.getOrNull() }
                 ?: WatermarkPosition.BOTTOM_RIGHT,
             opacity = prefs[KEY_OPACITY] ?: 0.7f,
+            showDate = prefs[KEY_SHOW_DATE] ?: true,
+            showSerial = prefs[KEY_SHOW_SERIAL] ?: true,
+            showAddress = prefs[KEY_SHOW_ADDRESS] ?: true,
+            showLatlng = prefs[KEY_SHOW_LATNG] ?: true,
         )
     }
 
@@ -91,10 +96,42 @@ class WatermarkConfigRepository @Inject constructor(
         }
     }
 
+    /** 设置是否显示拍摄日期段。 */
+    suspend fun setShowDate(v: Boolean) {
+        withContext(Dispatchers.IO) {
+            context.watermarkDataStore.edit { prefs -> prefs[KEY_SHOW_DATE] = v }
+        }
+    }
+
+    /** 设置是否显示序号段。 */
+    suspend fun setShowSerial(v: Boolean) {
+        withContext(Dispatchers.IO) {
+            context.watermarkDataStore.edit { prefs -> prefs[KEY_SHOW_SERIAL] = v }
+        }
+    }
+
+    /** 设置是否显示地址段。 */
+    suspend fun setShowAddress(v: Boolean) {
+        withContext(Dispatchers.IO) {
+            context.watermarkDataStore.edit { prefs -> prefs[KEY_SHOW_ADDRESS] = v }
+        }
+    }
+
+    /** 设置是否显示经纬度段。 */
+    suspend fun setShowLatlng(v: Boolean) {
+        withContext(Dispatchers.IO) {
+            context.watermarkDataStore.edit { prefs -> prefs[KEY_SHOW_LATNG] = v }
+        }
+    }
+
     private companion object {
         val KEY_ENABLED = booleanPreferencesKey("enabled")
         val KEY_FONT_SIZE = stringPreferencesKey("font_size")
         val KEY_POSITION = stringPreferencesKey("position")
         val KEY_OPACITY = floatPreferencesKey("opacity")
+        val KEY_SHOW_DATE = booleanPreferencesKey("show_date")
+        val KEY_SHOW_SERIAL = booleanPreferencesKey("show_serial")
+        val KEY_SHOW_ADDRESS = booleanPreferencesKey("show_address")
+        val KEY_SHOW_LATNG = booleanPreferencesKey("show_latlng")
     }
 }

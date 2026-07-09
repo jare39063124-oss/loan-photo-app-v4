@@ -61,6 +61,11 @@ data class WatermarkConfig(
     val fontSize: WatermarkFontSize = WatermarkFontSize.MEDIUM,
     val opacity: Float = 0.7f,
     val enabled: Boolean = true,
+    /** 水印内容逐项显示开关（默认全 true，向后兼容）。全 false 时 segments 为空，不绘制水印块。 */
+    val showDate: Boolean = true,
+    val showSerial: Boolean = true,
+    val showAddress: Boolean = true,
+    val showLatlng: Boolean = true,
 )
 
 /**
@@ -231,40 +236,59 @@ class WatermarkGenerator @Inject constructor() {
     }
 
     /**
-     * 构造水印段内容：拍摄日期 / （可选）序号 / 地址名 / 经纬度。
+     * 构造水印段内容（向后兼容重载，等价于 4 开关全 true）。
      *
-     * - location 为 null 时（定位失败），地址段和经纬度段显示「定位失败」
-     * - 拍摄日期段始终正常显示
-     * - [serial] 非空且非 blank 时在日期段后插入「序号:xxx」段，
-     *   segments 变为 [日期, 序号, 地址, 经纬度]（4 段）；
-     *   serial 为空时保持原 3 段 [日期, 地址, 经纬度]
-     *
-     * @param captureTimeMillis 拍照时间毫秒
-     * @param location 位置结果；为 null 时水印显示「定位失败」
-     * @param serial 客户序号；非空时插入「序号:xxx」段
+     * @see [buildSegments] 的带开关重载
      */
     fun buildSegments(
         captureTimeMillis: Long,
         location: LocationResult?,
         serial: String? = null,
+    ): List<String> = buildSegments(captureTimeMillis, location, serial, true, true, true, true)
+
+    /**
+     * 构造水印段内容：拍摄日期 / （可选）序号 / 地址名 / 经纬度，按 4 个开关过滤。
+     *
+     * - location 为 null 时（定位失败），地址段和经纬度段显示「定位失败」（受 showAddress/showLatlng 控制）
+     * - 拍摄日期段始终受 showDate 控制
+     * - serial 为空或 showSerial=false 时不插入序号段
+     * - 全部开关关闭时返回 emptyList()（调用方据此不绘制水印块）
+     *
+     * @param captureTimeMillis 拍照时间毫秒
+     * @param location 位置结果；为 null 时水印显示「定位失败」
+     * @param serial 客户序号；非空且 showSerial=true 时插入「序号:xxx」段
+     * @param showDate 是否显示拍摄日期段
+     * @param showSerial 是否显示序号段
+     * @param showAddress 是否显示地址段
+     * @param showLatlng 是否显示经纬度段
+     */
+    fun buildSegments(
+        captureTimeMillis: Long,
+        location: LocationResult?,
+        serial: String?,
+        showDate: Boolean,
+        showSerial: Boolean,
+        showAddress: Boolean,
+        showLatlng: Boolean,
     ): List<String> {
-        val dateStr = LocalDate.now().format(dateFormatter)
-        val serialSegment = serial?.takeIf { it.isNotBlank() }?.let { "序号:$it" }
-        return if (location != null) {
-            val addr = location.address.ifBlank { "未知位置" }
-            val latlngStr = "%.6f,%.6f".format(Locale.US, location.lat, location.lng)
-            if (serialSegment != null) {
-                listOf(dateStr, serialSegment, addr, latlngStr)
+        val segments = mutableListOf<String>()
+        if (showDate) {
+            segments += LocalDate.now().format(dateFormatter)
+        }
+        if (showSerial) {
+            serial?.takeIf { it.isNotBlank() }?.let { segments += "序号:$it" }
+        }
+        if (showAddress) {
+            segments += if (location != null) location.address.ifBlank { "未知位置" } else "定位失败"
+        }
+        if (showLatlng) {
+            segments += if (location != null) {
+                "%.6f,%.6f".format(Locale.US, location.lat, location.lng)
             } else {
-                listOf(dateStr, addr, latlngStr)
-            }
-        } else {
-            if (serialSegment != null) {
-                listOf(dateStr, serialSegment, "定位失败", "定位失败")
-            } else {
-                listOf(dateStr, "定位失败", "定位失败")
+                "定位失败"
             }
         }
+        return segments
     }
 
     /**

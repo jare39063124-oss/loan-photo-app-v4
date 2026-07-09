@@ -269,6 +269,36 @@ fun SettingsScreen(
                     fontSize = 12.sp,
                     color = Accent,
                 )
+                Spacer(modifier = Modifier.size(8.dp))
+                SettingsDivider()
+                Spacer(modifier = Modifier.size(8.dp))
+                // 水印内容逐项显示开关（4 项）
+                Text(
+                    text = "水印内容",
+                    fontSize = 12.sp,
+                    color = TextSecondary,
+                )
+                Spacer(modifier = Modifier.size(4.dp))
+                WatermarkContentToggle(
+                    label = "拍摄日期",
+                    checked = watermarkConfig.showDate,
+                    onCheckedChange = { viewModel.setShowDate(it) },
+                )
+                WatermarkContentToggle(
+                    label = "序号",
+                    checked = watermarkConfig.showSerial,
+                    onCheckedChange = { viewModel.setShowSerial(it) },
+                )
+                WatermarkContentToggle(
+                    label = "地址",
+                    checked = watermarkConfig.showAddress,
+                    onCheckedChange = { viewModel.setShowAddress(it) },
+                )
+                WatermarkContentToggle(
+                    label = "经纬度",
+                    checked = watermarkConfig.showLatlng,
+                    onCheckedChange = { viewModel.setShowLatlng(it) },
+                )
             }
 
             // 缓存
@@ -496,6 +526,25 @@ private fun <T> WatermarkDropdown(
                 DropdownMenuItem(text = { Text(text) }, onClick = { onSelect(value); expanded = false })
             }
         }
+    }
+}
+
+/**
+ * 水印内容单项开关行（标签 + Switch，SpaceBetween 布局）。
+ */
+@Composable
+private fun WatermarkContentToggle(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = label, fontSize = 14.sp, color = TextSecondary)
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 
