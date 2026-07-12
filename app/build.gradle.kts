@@ -57,8 +57,8 @@ android {
         applicationId = "com.banktool.loanphoto"
         minSdk = 26  // Apache POI 5.x requires API 26 (MethodHandle); all target devices are API 30+
         targetSdk = 35
-        versionCode = 11
-        versionName = "4.1.0"
+        versionCode = 12
+        versionName = "4.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -120,14 +120,6 @@ android {
             buildConfigField("boolean", "IS_TRIAL", "false")
             buildConfigField("String", "EXPIRY_DATE", "\"2099-12-31\"")
             buildConfigField("String", "LICENSED_DEVICE_ID_HASH", "\"${sha256("")}\"")
-        }
-        create("huawei") {
-            dimension = "license"
-            buildConfigField("boolean", "IS_TRIAL", "false")
-            buildConfigField("String", "EXPIRY_DATE", "\"2099-12-31\"")
-            buildConfigField("String", "LICENSED_DEVICE_ID_HASH", "\"${sha256("")}\"")
-            // 华为专属版本：Camera2 真广角实现，versionName 单独标识
-            versionName = "4.1.0-huawei"
         }
     }
 

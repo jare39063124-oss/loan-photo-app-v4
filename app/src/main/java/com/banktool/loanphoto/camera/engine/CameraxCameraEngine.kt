@@ -1,6 +1,7 @@
 package com.banktool.loanphoto.camera.engine
 
 import android.content.Context
+import android.widget.FrameLayout
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -56,15 +57,17 @@ class CameraxCameraEngine @Inject constructor(
     private var flashMode: Int = 0
 
     /**
-     * 绑定预览宿主到生命周期。host 必须为 [PreviewView]。
+     * 绑定预览到生命周期。由调用方传入 [FrameLayout] 容器，本实现自建 [PreviewView] 并 addView。
      *
      * 复刻原 bindCamera + onCameraReady + updateZoomInfo：
      * - unbindAll 后重新绑定 Preview + ImageCapture
      * - 读取 zoomState 初始化缩放范围与广角判定
      * - flashMode==2 时打开 torch
      */
-    override fun bind(host: Any, lifecycleOwner: LifecycleOwner) {
-        val previewView = host as PreviewView
+    override fun bind(container: FrameLayout, lifecycleOwner: LifecycleOwner) {
+        val previewView = PreviewView(container.context)
+        container.removeAllViews()
+        container.addView(previewView)
         val cameraExecutor = ContextCompat.getMainExecutor(context)
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         cameraProviderFuture.addListener({

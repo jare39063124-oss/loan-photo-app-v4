@@ -283,6 +283,6 @@ class LocationService @Inject constructor(
         const val CACHE_TTL_MS = 5L * 60 * 1000 // 5 分钟
         const val LOCATION_TIMEOUT_MS = 15000L // 15 秒超时
         const val MAX_HISTORY = 5 // 位置历史容量上限
-        const val HISTORY_MAX_AGE_MS = 60_000L // 历史最大年龄 60 秒，超过则清理
+        const val HISTORY_MAX_AGE_MS = 30_000L // 历史最大年龄 30 秒，超过则清理（>10s 兜底窗口）
     }
 }

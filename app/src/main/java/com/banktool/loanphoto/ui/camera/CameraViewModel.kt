@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.io.File
 import java.text.SimpleDateFormat
@@ -82,7 +83,7 @@ data class CameraUiState(
  * 相机 ViewModel。
  *
  * 职责：
- * 1. 持有 [CameraEngine]（由 Hilt 按 flavor 注入：trial/full=CameraX，huawei=Camera2）
+ * 1. 持有 [CameraEngine]（由 Hilt 在运行时按机型注入：HUAWEI/HONOR=Camera2CameraEngine，其余=CameraxCameraEngine）
  * 2. 维护当前 [PhotoType]、主 [CustomerRow]、多选 [CustomerRow] 列表
  * 3. 拍照触发：engine.captureToFile -> 落盘 -> 水印 -> 缩略图 -> markPhoto/markPhotoBatch
  * 4. 持久化 [CameraSession]（拍照前 save，完成或退出后 clear）
@@ -374,7 +375,9 @@ class CameraViewModel @Inject constructor(
                 // 1. 位置：优先实时定位；失败时回退 10s 内历史定位（地下/无信号场景兜底）
                 var location: LocationResult? = withContext(Dispatchers.IO) {
                     try {
-                        locationService.getCurrentLocation()
+                        withTimeoutOrNull(CAPTURE_LOCATION_TIMEOUT_MS) {
+                            locationService.getCurrentLocation()
+                        }
                     } catch (e: Exception) {
                         Timber.w(e, "定位失败")
                         null
@@ -630,5 +633,6 @@ class CameraViewModel @Inject constructor(
 
     private companion object {
         const val REQUEST_CODE_CAMERA = 1001
+        const val CAPTURE_LOCATION_TIMEOUT_MS = 3000L
     }
 }

@@ -21,6 +21,7 @@ import android.os.HandlerThread
 import android.util.Size
 import android.view.Surface
 import android.view.TextureView
+import android.widget.FrameLayout
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
@@ -35,7 +36,10 @@ import javax.inject.Singleton
 import kotlin.math.abs
 
 /**
- * 基于 Camera2 API 的相机引擎实现（huawei flavor 专用）。
+ * 基于 Camera2 API 的相机引擎实现（华为/HONOR 设备运行时选用）。
+ *
+ * 由 [com.banktool.loanphoto.di.CameraEngineModule] 通过 [com.banktool.loanphoto.util.DeviceDetector.isHuaweiDevice]
+ * 在运行时判定：HUAWEI/HONOR 设备注入本引擎，其余设备注入 [CameraxCameraEngine]。
  *
  * 背景：华为 Mate70 的后置主摄是一个 logical multi-camera，其超广角镜头作为物理子相机
  * 隐藏在 logical camera 之下，CameraX 无法选择该物理子相机。本引擎直接使用 Camera2 API，
@@ -135,11 +139,10 @@ class Camera2CameraEngine @Inject constructor(
     // ===================== CameraEngine 接口实现 =====================
 
     @SuppressLint("MissingPermission")
-    override fun bind(host: Any, lifecycleOwner: LifecycleOwner) {
-        val texture = host as? TextureView ?: run {
-            Timber.e("Camera2CameraEngine.bind host 不是 TextureView: ${host?.javaClass}")
-            return
-        }
+    override fun bind(container: FrameLayout, lifecycleOwner: LifecycleOwner) {
+        val texture = TextureView(container.context)
+        container.removeAllViews()
+        container.addView(texture)
         this.textureView = texture
         this.lifecycleOwner = lifecycleOwner
         lifecycleOwner.lifecycle.addObserver(lifecycleObserver)

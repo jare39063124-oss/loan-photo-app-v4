@@ -3,6 +3,7 @@ package com.banktool.loanphoto.data.camera
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Matrix
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
@@ -203,16 +204,24 @@ class WatermarkGenerator @Inject constructor() {
                 return@withContext null
             }
 
+            // 按源文件 EXIF 方向旋转到观看方向，确保水印正向绘制
+            val orientation = runCatching {
+                ExifInterface(sourcePath).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL,
+                )
+            }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+            val oriented = rotateBitmapByExif(srcBitmap, orientation)
+
             val resultBitmap = if (config.enabled) {
                 drawWatermark(
-                    bitmap = srcBitmap,
+                    bitmap = oriented,
                     segments = config.segments,
                     position = config.position,
                     fontSize = config.fontSize,
                     opacity = config.opacity,
                 )
             } else {
-                srcBitmap
+                oriented
             }
 
             // 写出 JPEG
@@ -222,8 +231,9 @@ class WatermarkGenerator @Inject constructor() {
                 resultBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, fos)
                 fos.flush()
             }
-            srcBitmap.recycle()
-            if (resultBitmap !== srcBitmap) resultBitmap.recycle()
+            if (oriented !== srcBitmap) srcBitmap.recycle()
+            if (resultBitmap !== oriented) oriented.recycle()
+            resultBitmap.recycle()
 
             // 写入 GPS EXIF（保留原 EXIF + 追加 GPS；location=null 时跳过 GPS）
             writeGpsExif(outFile.absolutePath, sourcePath, location)
@@ -292,6 +302,30 @@ class WatermarkGenerator @Inject constructor() {
     }
 
     /**
+     * 按源文件 EXIF 方向标签将 bitmap 旋转到正确观看方向。
+     *
+     * BitmapFactory.decodeFile 不应用 EXIF 旋转，直接在原始像素上画水印会导致
+     * 带方向标签的照片（如横版 ROTATE_90）水印呈竖排。本方法把旋转烘焙进像素，
+     * 配合输出时 ORIENTATION_NORMAL，确保水印始终正向。
+     *
+     * NORMAL/UNDEFINED 或无需变换时返回原 bitmap（不拷贝）。
+     */
+    private fun rotateBitmapByExif(bitmap: Bitmap, orientation: Int): Bitmap {
+        val matrix = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> { matrix.postRotate(90f); matrix.postScale(-1f, 1f) }
+            ExifInterface.ORIENTATION_TRANSVERSE -> { matrix.postRotate(270f); matrix.postScale(-1f, 1f) }
+            else -> return bitmap
+        }
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    }
+
+    /**
      * 复制源文件 EXIF 并写入 GPS 信息到目标文件。
      *
      * location 为 null 时仅复制原始 EXIF，跳过 GPS 写入。
@@ -305,10 +339,9 @@ class WatermarkGenerator @Inject constructor() {
             val sourceExif = runCatching { ExifInterface(sourcePath) }.getOrNull()
             val targetExif = ExifInterface(targetPath)
 
-            // 复制原始 EXIF（方向、设备等）
+            // 复制原始 EXIF（设备等；方向不复制，已烘焙进像素）
             if (sourceExif != null) {
                 val tags = listOf(
-                    ExifInterface.TAG_ORIENTATION,
                     ExifInterface.TAG_MAKE,
                     ExifInterface.TAG_MODEL,
                     ExifInterface.TAG_DATETIME,
@@ -320,6 +353,8 @@ class WatermarkGenerator @Inject constructor() {
                         targetExif.setAttribute(tag, value)
                     }
                 }
+                // 旋转已烘焙进像素，输出方向置 NORMAL（不复制源方向标签）
+                targetExif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
             }
 
             // GPS 经纬度（location 为 null 时跳过 GPS 写入）

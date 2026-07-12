@@ -1,5 +1,6 @@
 package com.banktool.loanphoto.camera.engine
 
+import android.widget.FrameLayout
 import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.flow.StateFlow
 import java.io.File
@@ -24,15 +25,15 @@ data class ZoomInfo(
 /**
  * 相机引擎抽象层：解耦 ViewModel/UI 与具体相机 API（CameraX / Camera2）。
  *
- * - [bind]：绑定预览宿主（CameraX 后端为 androidx.camera.view.PreviewView；
- *   Camera2 后端为 android.view.TextureView），由实现强转
+ * - [bind]：由调用方传入 [FrameLayout] 容器，实现自建预览 Surface 并 addView
+ *   （CameraX 后端创建 PreviewView；Camera2 后端创建 TextureView）
  * - [captureToFile]：触发拍照落盘（实现负责按已设置 flashMode 选用正确的闪光策略）
  * - 伸缩/广角/闪光/torch/生命周期均由实现承担
  */
 interface CameraEngine {
     val zoomInfo: StateFlow<ZoomInfo>
     val cameraReady: StateFlow<Boolean>
-    fun bind(host: Any, lifecycleOwner: LifecycleOwner)
+    fun bind(container: FrameLayout, lifecycleOwner: LifecycleOwner)
     fun captureToFile(
         outputFile: File,
         executor: Executor,

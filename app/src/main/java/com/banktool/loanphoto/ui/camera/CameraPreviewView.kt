@@ -1,12 +1,10 @@
 package com.banktool.loanphoto.ui.camera
 
-import android.graphics.SurfaceTexture
-import android.view.TextureView
+import android.widget.FrameLayout
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -16,19 +14,13 @@ import com.banktool.loanphoto.camera.engine.CameraEngine
 import timber.log.Timber
 
 /**
- * Camera2 预览 Composable（huawei flavor 专用，源集替换 main 的同名 Composable）。
+ * 统一相机预览 Composable（trial/full 共用，main 源集）。
  *
- * 与 main/trial/full 的 CameraX 版本区别：
- * - 使用 [TextureView] 而非 PreviewView，作为 [Camera2CameraEngine.bind] 的 host
- * - 双指缩放直接调用 [CameraEngine.setZoom]（引擎内部处理 Camera2 zoom ratio / crop region）
- * - onDispose 主动调用 [CameraEngine.release]，配合生命周期 DESTROYED 双重释放
+ * 提供一个 [FrameLayout] 容器，由 [CameraEngine.bind] 自建预览 Surface：
+ * - CameraxCameraEngine 创建 PreviewView 并 addView
+ * - Camera2CameraEngine 创建 TextureView 并 addView
  *
- * 注意：本文件与 main 的 CameraPreviewView.kt 同 FQN，必须在 trial/full 源集中各放一份
- * CameraX 版本，并从 main 中移除，否则 huawei 构建会出现重复定义编译错误。
- *
- * @param engine 由 Hilt 注入的 Camera2 相机引擎
- * @param onZoomChange 双指缩放后回调新 zoom ratio（供 UI 同步滑块）
- * @param modifier Compose 修饰符
+ * 双指捏合读 engine.zoomInfo 范围调 engine.setZoom。
  */
 @Composable
 fun CameraPreviewView(
@@ -38,19 +30,19 @@ fun CameraPreviewView(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val textureView: TextureView = remember { TextureView(context) }
 
     DisposableEffect(Unit) {
         onDispose {
-            Timber.d("Camera2 CameraPreviewView onDispose")
+            Timber.d("CameraPreviewView onDispose")
             engine.release()
         }
     }
 
     AndroidView(
         factory = { ctx ->
-            engine.bind(textureView, lifecycleOwner)
-            textureView
+            val container = FrameLayout(ctx)
+            engine.bind(container, lifecycleOwner)
+            container
         },
         modifier = modifier
             .fillMaxSize()
