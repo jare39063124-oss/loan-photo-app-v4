@@ -2,6 +2,7 @@ package com.banktool.loanphoto.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.banktool.loanphoto.data.camera.PhotoQuality
 import com.banktool.loanphoto.data.camera.WatermarkConfig
 import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkPosition
@@ -48,6 +49,10 @@ class SettingsViewModel @Inject constructor(
     /** 水印配置（初始值 segments 为空，订阅 DataStore 后立即更新为持久化值）。 */
     val watermarkConfig: StateFlow<WatermarkConfig> = watermarkConfigRepository.configFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, WatermarkConfig(segments = emptyList()))
+
+    /** 照片质量（初始值 HIGH，订阅 DataStore 后立即更新为持久化值）。 */
+    val photoQuality: StateFlow<PhotoQuality> = watermarkConfigRepository.getPhotoQuality()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, PhotoQuality.HIGH)
 
     /**
      * 设置某一段命名配置并持久化。
@@ -99,6 +104,11 @@ class SettingsViewModel @Inject constructor(
     /** 设置是否显示经纬度段。 */
     fun setShowLatlng(v: Boolean) {
         viewModelScope.launch { watermarkConfigRepository.setShowLatlng(v) }
+    }
+
+    /** 设置照片质量等级。 */
+    fun setPhotoQuality(v: PhotoQuality) {
+        viewModelScope.launch { watermarkConfigRepository.setPhotoQuality(v) }
     }
 
     /**

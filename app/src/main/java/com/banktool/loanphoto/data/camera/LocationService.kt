@@ -12,6 +12,11 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.location.FusedLocationProviderClient
@@ -19,7 +24,11 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.OnCompleteListener
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -42,6 +51,13 @@ data class LocationResult(
     val address: String,
     val timestamp: Long,
 )
+
+private val Context.locationDataStore by preferencesDataStore(name = "location_cache")
+
+private val KEY_LAT = floatPreferencesKey("lat")
+private val KEY_LNG = floatPreferencesKey("lng")
+private val KEY_ADDRESS = stringPreferencesKey("address")
+private val KEY_TIMESTAMP = longPreferencesKey("timestamp")
 
 /**
  * 位置服务封装：优先 [FusedLocationProviderClient]（GMS 可用时），否则回退 [LocationManager]。
@@ -74,6 +90,40 @@ class LocationService @Inject constructor(
      * - 纯内存结构，不持久化，重启后为空
      */
     private val history: ArrayDeque<LocationResult> = ArrayDeque()
+
+    /**
+     * 服务级 CoroutineScope（用于 DataStore fire-and-forget 写入与 init 异步加载）。
+     * SupervisorJob 保证单次写失败不会取消整个 scope。
+     */
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 从 DataStore 加载的最近一次持久化定位（init 时异步加载）。
+     * 用于内存 history 为空（如进程重启）时的兜底。
+     */
+    @Volatile
+    private var persistedLastLocation: LocationResult? = null
+
+    init {
+        // 异步加载持久化定位到内存（不阻塞构造，失败仅记录日志）
+        serviceScope.launch {
+            runCatching {
+                val prefs = context.locationDataStore.data.first()
+                val lat = prefs[KEY_LAT]
+                val lng = prefs[KEY_LNG]
+                if (lat != null && lng != null) {
+                    val address = prefs[KEY_ADDRESS] ?: ""
+                    val timestamp = prefs[KEY_TIMESTAMP] ?: 0L
+                    persistedLastLocation = LocationResult(
+                        lat = lat.toDouble(),
+                        lng = lng.toDouble(),
+                        address = address,
+                        timestamp = timestamp,
+                    )
+                }
+            }.onFailure { Timber.w(it, "加载持久化位置失败") }
+        }
+    }
 
     /**
      * 获取当前位置。优先返回缓存（5 分钟内）。
@@ -145,6 +195,17 @@ class LocationService @Inject constructor(
                 history.removeFirst()
             }
         }
+        // 同步写入 DataStore（fire-and-forget），供进程重启后兜底
+        serviceScope.launch {
+            runCatching {
+                context.locationDataStore.edit { prefs ->
+                    prefs[KEY_LAT] = result.lat.toFloat()
+                    prefs[KEY_LNG] = result.lng.toFloat()
+                    prefs[KEY_ADDRESS] = result.address
+                    prefs[KEY_TIMESTAMP] = result.timestamp
+                }
+            }.onFailure { Timber.w(it, "持久化位置到 DataStore 失败") }
+        }
     }
 
     /**
@@ -157,7 +218,8 @@ class LocationService @Inject constructor(
      */
     suspend fun getRecentWithin(maxAgeMs: Long): LocationResult? = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
-        synchronized(history) {
+        // 1. 优先查内存 history（最新在尾，倒序遍历）
+        val memHit: LocationResult? = synchronized(history) {
             // 从最新（尾，索引 size-1）向最旧（头，索引 0）倒序遍历，
             // 返回第一条 age ∈ 0..maxAgeMs 的记录。kotlin.collections.ArrayDeque
             // 支持 indexed get，无 descendingIterator，故用 downTo 索引遍历。
@@ -172,6 +234,16 @@ class LocationService @Inject constructor(
             }
             found
         }
+        if (memHit != null) return@withContext memHit
+        // 2. 内存未命中（如重启后 history 为空），检查 DataStore 持久化的最近一次定位
+        persistedLastLocation?.let { p ->
+            val age = now - p.timestamp
+            if (age in 0..maxAgeMs) {
+                Timber.d("LocationService 使用持久化定位兜底 age=%dms", age)
+                return@withContext p
+            }
+        }
+        null
     }
 
     /**

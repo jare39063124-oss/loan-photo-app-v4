@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.banktool.loanphoto.data.camera.PhotoQuality
 import com.banktool.loanphoto.data.camera.WatermarkConfig
 import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkPosition
@@ -124,6 +125,24 @@ class WatermarkConfigRepository @Inject constructor(
         }
     }
 
+    /**
+     * 暴露照片质量 [Flow]，供 Composable collectAsState 实时响应变更。
+     *
+     * 持久化枚举名（HIGH/MEDIUM/LOW），缺失或解析失败时回退 [PhotoQuality.HIGH]。
+     */
+    fun getPhotoQuality(): Flow<PhotoQuality> = context.watermarkDataStore.data.map { prefs ->
+        prefs[KEY_PHOTO_QUALITY]
+            ?.let { runCatching { PhotoQuality.valueOf(it) }.getOrNull() }
+            ?: PhotoQuality.HIGH
+    }
+
+    /** 设置照片质量等级。 */
+    suspend fun setPhotoQuality(quality: PhotoQuality) {
+        withContext(Dispatchers.IO) {
+            context.watermarkDataStore.edit { prefs -> prefs[KEY_PHOTO_QUALITY] = quality.name }
+        }
+    }
+
     private companion object {
         val KEY_ENABLED = booleanPreferencesKey("enabled")
         val KEY_FONT_SIZE = stringPreferencesKey("font_size")
@@ -133,5 +152,6 @@ class WatermarkConfigRepository @Inject constructor(
         val KEY_SHOW_SERIAL = booleanPreferencesKey("show_serial")
         val KEY_SHOW_ADDRESS = booleanPreferencesKey("show_address")
         val KEY_SHOW_LATNG = booleanPreferencesKey("show_latlng")
+        val KEY_PHOTO_QUALITY = stringPreferencesKey("photo_quality")
     }
 }

@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import com.banktool.loanphoto.camera.engine.CameraEngine
 import com.banktool.loanphoto.data.camera.LocationResult
 import com.banktool.loanphoto.data.camera.LocationService
+import com.banktool.loanphoto.data.camera.PhotoQuality
 import com.banktool.loanphoto.data.camera.ThumbnailGenerator
 import com.banktool.loanphoto.data.camera.WatermarkConfig
 import com.banktool.loanphoto.data.camera.WatermarkGenerator
@@ -407,6 +408,7 @@ class CameraViewModel @Inject constructor(
 
                 // 2. 读取持久化水印配置（含 4 个内容显示开关），按开关过滤水印段
                 val savedConfig = watermarkConfigRepository.configFlow().first()
+                val photoQuality = watermarkConfigRepository.getPhotoQuality().first()
                 val segments = watermarkGenerator.buildSegments(
                     captureTimeMillis = System.currentTimeMillis(),
                     location = location,
@@ -428,13 +430,14 @@ class CameraViewModel @Inject constructor(
                     showLatlng = savedConfig.showLatlng,
                 )
 
-                // 3. 绘制水印并覆盖保存（同一路径）
+                // 3. 绘制水印并覆盖保存（同一路径），按照片质量等比缩放
                 val watermarkedPath = withContext(Dispatchers.IO) {
                     watermarkGenerator.drawAndSave(
                         sourcePath = savedFile.absolutePath,
                         outputPath = savedFile.absolutePath,
                         location = location,
                         config = config,
+                        photoQuality = photoQuality,
                     )
                 }
                 if (watermarkedPath == null) {
@@ -633,6 +636,6 @@ class CameraViewModel @Inject constructor(
 
     private companion object {
         const val REQUEST_CODE_CAMERA = 1001
-        const val CAPTURE_LOCATION_TIMEOUT_MS = 3000L
+        const val CAPTURE_LOCATION_TIMEOUT_MS = 1500L
     }
 }

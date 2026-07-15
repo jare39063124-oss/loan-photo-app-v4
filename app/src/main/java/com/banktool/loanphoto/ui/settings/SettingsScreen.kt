@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.banktool.loanphoto.BuildConfig
+import com.banktool.loanphoto.data.camera.PhotoQuality
 import com.banktool.loanphoto.data.camera.WatermarkConfig
 import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkPosition
@@ -95,6 +96,7 @@ fun SettingsScreen(
 
     val namingConfig by viewModel.namingConfig.collectAsStateWithLifecycle()
     val watermarkConfig by viewModel.watermarkConfig.collectAsStateWithLifecycle()
+    val photoQuality by viewModel.photoQuality.collectAsStateWithLifecycle()
 
     // 设备识别码 / 设备信息（用于「关于」卡片展示，授权激活时需将识别码告知作者）
     val licenseChecker = remember { LicenseChecker() }
@@ -298,6 +300,22 @@ fun SettingsScreen(
                     label = "经纬度",
                     checked = watermarkConfig.showLatlng,
                     onCheckedChange = { viewModel.setShowLatlng(it) },
+                )
+            }
+
+            // 照片质量
+            SettingsCard(title = "照片质量") {
+                Text(
+                    text = "选择拍摄照片的分辨率，等比缩放最长边至目标像素（不放大）。",
+                    fontSize = 13.sp,
+                    color = TextSecondary,
+                )
+                Spacer(modifier = Modifier.size(12.dp))
+                WatermarkDropdown(
+                    label = "等级",
+                    selectedText = photoQuality.displayName,
+                    options = PhotoQuality.entries.map { it.displayName to it },
+                    onSelect = { viewModel.setPhotoQuality(it) },
                 )
             }
 

@@ -21,6 +21,7 @@ import android.os.HandlerThread
 import android.util.Size
 import android.view.Surface
 import android.view.TextureView
+import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -200,6 +201,7 @@ class Camera2CameraEngine @Inject constructor(
             request.addTarget(reader.surface)
             previewSurface?.let { request.addTarget(it) }
             request.set(CaptureRequest.JPEG_QUALITY, 100)
+            request.set(CaptureRequest.JPEG_ORIENTATION, calculateJpegOrientation())
             applyZoomToRequest(request)
             // 闪光灯：0→OFF, 1→AUTO_FLASH, 2→SINGLE(torch 已开), 3→SINGLE
             when (flashMode) {
@@ -713,6 +715,31 @@ class Camera2CameraEngine @Inject constructor(
             val top = (centerY - cropH / 2f).toInt().coerceIn(array.top, array.bottom - cropH)
             builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(left, top, left + cropW, top + cropH))
         }
+    }
+
+    /**
+     * 计算 JPEG 方向：根据传感器方向与显示屏旋转推算正确的 EXIF orientation。
+     * 公式：jpegOrientation = (sensorOrientation + displayDegrees) % 360
+     */
+    private fun calculateJpegOrientation(): Int {
+        val sensorOrientation = currentCharacteristics
+            ?.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+        val displayRotation = try {
+            val display = (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay
+            display.rotation
+        } catch (e: Exception) {
+            Surface.ROTATION_0
+        }
+        // 将显示屏旋转转为角度
+        val displayDegrees = when (displayRotation) {
+            Surface.ROTATION_0 -> 0
+            Surface.ROTATION_90 -> 90
+            Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+        // JPEG orientation = (sensorOrientation + displayDegrees) % 360
+        return (sensorOrientation + displayDegrees) % 360
     }
 
     /** 会话就绪后恢复当前 zoom / flash 状态到 UiState。 */

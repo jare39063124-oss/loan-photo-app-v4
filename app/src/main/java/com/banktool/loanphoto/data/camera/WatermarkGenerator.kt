@@ -176,10 +176,14 @@ class WatermarkGenerator @Inject constructor() {
      * 便利方法：基于 [WatermarkConfig] 绘制并另存为 JPEG（quality=92），
      * 同时把 GPS EXIF 从源文件复制到目标文件。
      *
+     * 水印绘制完成后，按 [photoQuality] 等比缩放最长边至 [PhotoQuality.maxEdge]（不放大），
+     * 再压缩写出 JPEG。
+     *
      * @param sourcePath 源图片路径（用于读取 EXIF）
      * @param outputPath 输出 JPEG 路径
      * @param location 位置结果；为 null 时跳过 GPS EXIF 写入（仅复制原 EXIF）
      * @param config 水印配置
+     * @param photoQuality 照片质量等级（缩放最长边上限，默认 [PhotoQuality.HIGH]）
      * @return 输出文件路径（成功时与 outputPath 相同）
      */
     suspend fun drawAndSave(
@@ -187,6 +191,7 @@ class WatermarkGenerator @Inject constructor() {
         outputPath: String,
         location: LocationResult?,
         config: WatermarkConfig,
+        photoQuality: PhotoQuality = PhotoQuality.HIGH,
     ): String? = withContext(Dispatchers.IO) {
         try {
             val sourceFile = File(sourcePath)
@@ -224,16 +229,34 @@ class WatermarkGenerator @Inject constructor() {
                 oriented
             }
 
+            // 按照片质量等比缩放（不放大）：最长边超过 maxEdge 时缩小
+            val maxEdge = photoQuality.maxEdge
+            val longestEdge = maxOf(resultBitmap.width, resultBitmap.height)
+            val finalBitmap = if (longestEdge > maxEdge) {
+                val scale = maxEdge.toFloat() / longestEdge
+                Bitmap.createScaledBitmap(
+                    resultBitmap,
+                    (resultBitmap.width * scale).toInt(),
+                    (resultBitmap.height * scale).toInt(),
+                    true,
+                )
+            } else {
+                resultBitmap
+            }
+
             // 写出 JPEG
             val outFile = File(outputPath)
             outFile.parentFile?.mkdirs()
             FileOutputStream(outFile).use { fos ->
-                resultBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, fos)
+                finalBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, fos)
                 fos.flush()
             }
+            // 回收位图链：srcBitmap → oriented → resultBitmap → finalBitmap
+            // 每个对象仅回收一次（链中相同时跳过，避免 double-recycle / 内存泄漏）
             if (oriented !== srcBitmap) srcBitmap.recycle()
             if (resultBitmap !== oriented) oriented.recycle()
-            resultBitmap.recycle()
+            if (finalBitmap !== resultBitmap) resultBitmap.recycle()
+            finalBitmap.recycle()
 
             // 写入 GPS EXIF（保留原 EXIF + 追加 GPS；location=null 时跳过 GPS）
             writeGpsExif(outFile.absolutePath, sourcePath, location)

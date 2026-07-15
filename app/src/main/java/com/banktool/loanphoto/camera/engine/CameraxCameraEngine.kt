@@ -1,6 +1,8 @@
 package com.banktool.loanphoto.camera.engine
 
 import android.content.Context
+import android.view.Surface
+import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -39,6 +41,7 @@ class CameraxCameraEngine @Inject constructor(
     private val imageCapture: ImageCapture = ImageCapture.Builder()
         .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
         .setTargetAspectRatio(androidx.camera.core.AspectRatio.RATIO_4_3)
+        .setTargetRotation(currentDisplayRotation())
         .build()
 
     /** 绑定后持有，供缩放/torch 控制。 */
@@ -132,6 +135,9 @@ class CameraxCameraEngine @Inject constructor(
             else -> ImageCapture.FLASH_MODE_OFF
         }
 
+        // 更新 targetRotation 为当前显示屏旋转，处理 bind 后用户旋转设备的情况
+        imageCapture.targetRotation = currentDisplayRotation()
+
         val options = ImageCapture.OutputFileOptions
             .Builder(outputFile)
             .build()
@@ -205,4 +211,14 @@ class CameraxCameraEngine @Inject constructor(
     override fun release() {
         // CameraX 由生命周期自动管理，无需手动释放
     }
+
+    /** 获取当前显示屏旋转角度（用于 ImageCapture targetRotation）。 */
+    private fun currentDisplayRotation(): Int =
+        try {
+            val display = (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay
+            display.rotation
+        } catch (e: Exception) {
+            Timber.w(e, "获取显示屏旋转失败，回退 ROTATION_0")
+            Surface.ROTATION_0
+        }
 }
