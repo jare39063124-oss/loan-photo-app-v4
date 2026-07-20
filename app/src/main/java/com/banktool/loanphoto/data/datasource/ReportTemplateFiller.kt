@@ -136,7 +136,7 @@ class ReportTemplateFiller @Inject constructor(
 
         // 输出到 cacheDir 临时文件（供分享/保存使用，不再写入 app 私有 reports 目录）
         val dateStrForFile = SimpleDateFormat("yyyyMMdd", Locale.CHINA).format(Date())
-        val fileName = "现场勘查日报表_${routeName}_${dateStrForFile}.xlsx"
+        val fileName = "现场勘查日报表_${dateStrForFile}_${routeName}.xlsx"
         val outputFile = File(context.cacheDir, fileName)
 
         ByteArrayOutputStream().use { baos ->

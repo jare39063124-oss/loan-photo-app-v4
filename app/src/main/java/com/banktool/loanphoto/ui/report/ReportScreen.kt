@@ -83,6 +83,9 @@ fun ReportScreen(
     // 取消按钮仅清空当前输入框，不删除已持久化的内容）
     var specialLogInput by rememberSaveable { mutableStateOf("") }
 
+    // 线路名称输入框（用于生成日报表文件名，与原 Excel 文件名解耦）
+    var routeNameInput by rememberSaveable { mutableStateOf("") }
+
     // 进入页面时加载已保存的特殊日志用于回显
     LaunchedEffect(sharedVm.excelUriMd5) {
         if (sharedVm.excelUriMd5.isNotBlank()) {
@@ -148,6 +151,8 @@ fun ReportScreen(
                     ReportIdleContent(
                         specialLogInput = specialLogInput,
                         onSpecialLogChange = { specialLogInput = it },
+                        routeNameInput = routeNameInput,
+                        onRouteNameChange = { routeNameInput = it },
                         onSave = {
                             viewModel.saveSpecialLog(sharedVm.excelUriMd5, specialLogInput)
                             Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
@@ -156,13 +161,14 @@ fun ReportScreen(
                             viewModel.generateReport(
                                 customers = sharedVm.rows,
                                 excelUriMd5 = sharedVm.excelUriMd5,
-                                routeName = sharedVm.excelFileName.ifBlank { "default" },
+                                routeName = routeNameInput.trim().ifBlank { "默认线路" },
                                 specialLog = specialLogInput
                             )
                         },
                         onCancel = {
                             // 仅清空当前输入框，不删除已保存内容
                             specialLogInput = ""
+                            routeNameInput = ""
                         }
                     )
                 }
@@ -206,6 +212,8 @@ fun ReportScreen(
 private fun ReportIdleContent(
     specialLogInput: String,
     onSpecialLogChange: (String) -> Unit,
+    routeNameInput: String,
+    onRouteNameChange: (String) -> Unit,
     onSave: () -> Unit,
     onGenerate: () -> Unit,
     onCancel: () -> Unit,
@@ -239,6 +247,26 @@ private fun ReportIdleContent(
                 color = TextSecondary
             )
             Spacer(modifier = Modifier.height(24.dp))
+
+            // 线路名称输入框（用于生成日报表文件名，必填，留空则使用默认值）
+            OutlinedTextField(
+                value = routeNameInput,
+                onValueChange = onRouteNameChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("线路名称") },
+                placeholder = {
+                    Text("如：线路四")
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(8.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Accent,
+                    unfocusedBorderColor = Divider,
+                ),
+                textStyle = TextStyle(fontSize = 14.sp, color = TextColor),
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
 
             // 补充说明 / 特殊日志输入区
             OutlinedTextField(

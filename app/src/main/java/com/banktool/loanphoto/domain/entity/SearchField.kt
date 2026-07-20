@@ -10,6 +10,7 @@ package com.banktool.loanphoto.domain.entity
  * - [ADDR]: 地址（合并匹配 C 列「地址概」+ D 列「地址详」）
  * - [REMARK]: 备注（查 progress.json 的 `_row_remarks[行号]`）
  * - [UNVISITED]: 未走访（状态过滤，photoCount==0，忽略 query）
+ * - [VISITED]: 已拍摄（状态过滤，photoCount>0，忽略 query）
  *
  * [isStatusFilter] 为 true 的字段是状态过滤（不依赖关键词输入），
  * UI 层应隐藏搜索输入框或显示提示文字。
@@ -20,4 +21,5 @@ enum class SearchField(val displayName: String, val isStatusFilter: Boolean = fa
     ADDR("地址"),
     REMARK("备注"),
     UNVISITED("未走访", isStatusFilter = true),
+    VISITED("已拍摄", isStatusFilter = true),
 }

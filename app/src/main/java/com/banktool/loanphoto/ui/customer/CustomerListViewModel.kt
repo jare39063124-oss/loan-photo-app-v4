@@ -633,6 +633,7 @@ class CustomerListViewModel @Inject constructor(
      *
      * - REMARK 字段查 [rowRemarks] (progress.json 的 _row_remarks[行号])
      * - UNVISITED 字段忽略 query，直接返回 photoCount==0 的行
+     * - VISITED 字段忽略 query，直接返回 photoCount>0 的行
      */
     private fun filterRows(
         rows: List<CustomerRow>,
@@ -644,6 +645,11 @@ class CustomerListViewModel @Inject constructor(
         if (field == SearchField.UNVISITED) {
             return rows.filter { row ->
                 (photoCounts[row.progressKey] ?: 0) == 0
+            }.map { it.rowIndex }
+        }
+        if (field == SearchField.VISITED) {
+            return rows.filter { row ->
+                (photoCounts[row.progressKey] ?: 0) > 0
             }.map { it.rowIndex }
         }
         if (query.isBlank()) return rows.map { it.rowIndex }
@@ -673,6 +679,9 @@ class CustomerListViewModel @Inject constructor(
             }
             SearchField.UNVISITED -> {
                 (photoCounts[row.progressKey] ?: 0) == 0
+            }
+            SearchField.VISITED -> {
+                (photoCounts[row.progressKey] ?: 0) > 0
             }
         }
     }

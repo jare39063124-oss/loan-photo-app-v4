@@ -1,8 +1,8 @@
 package com.banktool.loanphoto.camera.engine
 
 import android.content.Context
+import android.view.OrientationEventListener
 import android.view.Surface
-import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -44,6 +44,23 @@ class CameraxCameraEngine @Inject constructor(
         .setTargetRotation(currentDisplayRotation())
         .build()
 
+    /**
+     * 设备真实方向（0/90/180/270），由 [OrientationEventListener] 提供并量化。
+     *
+     * 应用锁定竖屏（AndroidManifest: screenOrientation="portrait"），[android.view.Display.getRotation]
+     * 恒为 ROTATION_0，无法感知用户横持手机；OrientationEventListener 直接读取传感器方向，
+     * 是横版照片水印方向修复的关键。
+     */
+    @Volatile
+    private var deviceOrientationDegrees: Int = 0
+
+    private val orientationEventListener = object : OrientationEventListener(context) {
+        override fun onOrientationChanged(degrees: Int) {
+            if (degrees == ORIENTATION_UNKNOWN) return
+            deviceOrientationDegrees = quantizeDegrees(degrees)
+        }
+    }
+
     /** 绑定后持有，供缩放/torch 控制。 */
     private var camera: Camera? = null
 
@@ -71,6 +88,10 @@ class CameraxCameraEngine @Inject constructor(
         val previewView = PreviewView(container.context)
         container.removeAllViews()
         container.addView(previewView)
+        // 启用方向监听，捕获用户横持手机的真实方向（应用锁竖屏，display.rotation 失效）
+        if (orientationEventListener.canDetectOrientation()) {
+            orientationEventListener.enable()
+        }
         val cameraExecutor = ContextCompat.getMainExecutor(context)
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         cameraProviderFuture.addListener({
@@ -210,15 +231,39 @@ class CameraxCameraEngine @Inject constructor(
      */
     override fun release() {
         // CameraX 由生命周期自动管理，无需手动释放
+        // 禁用方向监听，避免离开相机界面后仍占用传感器
+        orientationEventListener.disable()
     }
 
-    /** 获取当前显示屏旋转角度（用于 ImageCapture targetRotation）。 */
-    private fun currentDisplayRotation(): Int =
-        try {
-            val display = (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay
-            display.rotation
-        } catch (e: Exception) {
-            Timber.w(e, "获取显示屏旋转失败，回退 ROTATION_0")
-            Surface.ROTATION_0
-        }
+    /**
+     * 获取当前显示屏旋转角度（用于 ImageCapture targetRotation）。
+     *
+     * 应用锁定竖屏（[AndroidManifest.xml] screenOrientation="portrait"）使
+     * [android.view.Display.getRotation] 恒为 ROTATION_0；此处改用 [OrientationEventListener]
+     * 维护的 [deviceOrientationDegrees] 推导 Surface 旋转，从而正确感知横持。
+     *
+     * 映射（OE degrees → Surface rotation，1:1；EXIF 由 CameraX 公式 (sensorOrientation + rotationDegrees) % 360 推算，sensorOrientation=90）：
+     * - 0   → ROTATION_0  → EXIF ROTATE_90（竖直，正常竖拍，旋转 90° 正立）
+     * - 90  → ROTATION_90 → EXIF ROTATE_180（左横，传感器上下颠倒，旋转 180° 正立）
+     * - 180 → ROTATION_180→ EXIF ROTATE_270（倒置，旋转 270° 正立）
+     * - 270 → ROTATION_270→ EXIF NORMAL（右横，传感器已正立，无需旋转）
+     */
+    private fun currentDisplayRotation(): Int = when (deviceOrientationDegrees) {
+        90 -> Surface.ROTATION_90
+        180 -> Surface.ROTATION_180
+        270 -> Surface.ROTATION_270
+        else -> Surface.ROTATION_0
+    }
+
+    /**
+     * 将 OrientationEventListener 回调的 0-359 度数量化到最近的 0/90/180/270。
+     * 未知方向（-1）由调用方提前过滤，此处不处理。
+     */
+    private fun quantizeDegrees(degrees: Int): Int = when (degrees) {
+        in 0..44, in 315..359 -> 0
+        in 45..134 -> 90
+        in 135..224 -> 180
+        in 225..314 -> 270
+        else -> 0
+    }
 }

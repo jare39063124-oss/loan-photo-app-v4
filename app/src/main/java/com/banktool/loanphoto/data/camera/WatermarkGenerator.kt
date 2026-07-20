@@ -215,7 +215,11 @@ class WatermarkGenerator @Inject constructor() {
                     ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL,
                 )
             }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+            Timber.d("WatermarkGen EXIF orientation=%d srcBitmap=%dx%d sourcePath=%s",
+                orientation, srcBitmap.width, srcBitmap.height, sourcePath)
             val oriented = rotateBitmapByExif(srcBitmap, orientation)
+            Timber.d("WatermarkGen after rotate oriented=%dx%d (rotated=%s)",
+                oriented.width, oriented.height, oriented !== srcBitmap)
 
             val resultBitmap = if (config.enabled) {
                 drawWatermark(
@@ -243,6 +247,9 @@ class WatermarkGenerator @Inject constructor() {
             } else {
                 resultBitmap
             }
+            Timber.d("WatermarkGen final=%dx%d (landscape=%s) -> %s",
+                finalBitmap.width, finalBitmap.height,
+                finalBitmap.width > finalBitmap.height, outputPath)
 
             // 写出 JPEG
             val outFile = File(outputPath)

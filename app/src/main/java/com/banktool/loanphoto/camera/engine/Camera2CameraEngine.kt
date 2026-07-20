@@ -19,9 +19,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Size
+import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.TextureView
-import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -127,6 +127,23 @@ class Camera2CameraEngine @Inject constructor(
     @Volatile
     private var pendingWideToggle: Boolean = false
 
+    /**
+     * 设备真实方向（0/90/180/270），由 [OrientationEventListener] 提供并量化。
+     *
+     * 应用锁定竖屏（AndroidManifest: screenOrientation="portrait"），[android.view.Display.getRotation]
+     * 恒为 ROTATION_0，无法感知用户横持手机；OrientationEventListener 直接读取传感器方向，
+     * 是横版照片水印方向修复的关键。
+     */
+    @Volatile
+    private var deviceOrientationDegrees: Int = 0
+
+    private val orientationEventListener = object : OrientationEventListener(context) {
+        override fun onOrientationChanged(degrees: Int) {
+            if (degrees == ORIENTATION_UNKNOWN) return
+            deviceOrientationDegrees = quantizeDegrees(degrees)
+        }
+    }
+
     /** 生命周期观察者：DESTROYED 时释放相机资源。 */
     private val lifecycleObserver = object : LifecycleEventObserver {
         override fun onStateChanged(source: androidx.lifecycle.LifecycleOwner, event: Lifecycle.Event) {
@@ -147,6 +164,10 @@ class Camera2CameraEngine @Inject constructor(
         this.textureView = texture
         this.lifecycleOwner = lifecycleOwner
         lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
+        // 启用方向监听，捕获用户横持手机的真实方向（应用锁竖屏，display.rotation 失效）
+        if (orientationEventListener.canDetectOrientation()) {
+            orientationEventListener.enable()
+        }
         ensureBgThread()
 
         try {
@@ -298,6 +319,8 @@ class Camera2CameraEngine @Inject constructor(
     }
 
     override fun release() {
+        // 禁用方向监听，避免离开相机界面后仍占用传感器
+        orientationEventListener.disable()
         try {
             captureSession?.close()
         } catch (e: Exception) {
@@ -718,28 +741,36 @@ class Camera2CameraEngine @Inject constructor(
     }
 
     /**
-     * 计算 JPEG 方向：根据传感器方向与显示屏旋转推算正确的 EXIF orientation。
-     * 公式：jpegOrientation = (sensorOrientation + displayDegrees) % 360
+     * 计算 JPEG 方向：根据传感器方向与设备真实方向推算正确的 JPEG_ORIENTATION。
+     *
+     * 公式：jpegOrientation = (sensorOrientation + deviceOrientation) % 360
+     * 其中 deviceOrientation 为设备从自然方向逆时针旋转的角度（0/90/180/270），
+     * 由 [OrientationEventListener] 维护，与 [android.view.Display.getRotation] 语义一致。
+     *
+     * 应用锁定竖屏使 Display.getRotation 恒为 0，故改用 [deviceOrientationDegrees]。
+     *
+     * 各方向结果（sensorOrientation=90）：
+     * - OE 0°（竖直）→ JPEG=90：像素旋转 90°，输出竖向正立
+     * - OE 90°（左横）→ JPEG=180：像素旋转 180°，输出横向正立（传感器上下颠倒需翻转）
+     * - OE 180°（倒置）→ JPEG=270：像素旋转 270°，输出竖向倒置矫正
+     * - OE 270°（右横）→ JPEG=0：不旋转，输出横向正立（传感器已正立）
      */
     private fun calculateJpegOrientation(): Int {
         val sensorOrientation = currentCharacteristics
             ?.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
-        val displayRotation = try {
-            val display = (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay
-            display.rotation
-        } catch (e: Exception) {
-            Surface.ROTATION_0
-        }
-        // 将显示屏旋转转为角度
-        val displayDegrees = when (displayRotation) {
-            Surface.ROTATION_0 -> 0
-            Surface.ROTATION_90 -> 90
-            Surface.ROTATION_180 -> 180
-            Surface.ROTATION_270 -> 270
-            else -> 0
-        }
-        // JPEG orientation = (sensorOrientation + displayDegrees) % 360
-        return (sensorOrientation + displayDegrees) % 360
+        return (sensorOrientation + deviceOrientationDegrees) % 360
+    }
+
+    /**
+     * 将 OrientationEventListener 回调的 0-359 度数量化到最近的 0/90/180/270。
+     * 未知方向（-1）由调用方提前过滤，此处不处理。
+     */
+    private fun quantizeDegrees(degrees: Int): Int = when (degrees) {
+        in 0..44, in 315..359 -> 0
+        in 45..134 -> 90
+        in 135..224 -> 180
+        in 225..314 -> 270
+        else -> 0
     }
 
     /** 会话就绪后恢复当前 zoom / flash 状态到 UiState。 */
