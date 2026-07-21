@@ -242,16 +242,28 @@ class CameraxCameraEngine @Inject constructor(
      * [android.view.Display.getRotation] 恒为 ROTATION_0；此处改用 [OrientationEventListener]
      * 维护的 [deviceOrientationDegrees] 推导 Surface 旋转，从而正确感知横持。
      *
-     * 映射（OE degrees → Surface rotation，1:1；EXIF 由 CameraX 公式 (sensorOrientation + rotationDegrees) % 360 推算，sensorOrientation=90）：
-     * - 0   → ROTATION_0  → EXIF ROTATE_90（竖直，正常竖拍，旋转 90° 正立）
-     * - 90  → ROTATION_90 → EXIF ROTATE_180（左横，传感器上下颠倒，旋转 180° 正立）
-     * - 180 → ROTATION_180→ EXIF ROTATE_270（倒置，旋转 270° 正立）
-     * - 270 → ROTATION_270→ EXIF NORMAL（右横，传感器已正立，无需旋转）
+     * 方向约定（关键）：
+     * - [OrientationEventListener] 回调的 degrees 为**顺时针 (CW)** 约定：
+     *   0 = 自然方向（顶朝上）；90 = 顺时针旋转 90°（顶朝右，右横持）；
+     *   180 = 倒置；270 = 顺时针旋转 270°（顶朝左，左横持）。
+     * - [android.view.Display.getRotation] 与 Surface.ROTATION_* 为**逆时针 (CCW)** 约定：
+     *   ROTATION_0 = 0°；ROTATION_90 = 逆时针 90°（顶朝左，左横持）；
+     *   ROTATION_180 = 180°；ROTATION_270 = 逆时针 270°（顶朝右，右横持）。
+     * - 两者方向相反，必须反向映射，不能 1:1 对应。
+     *
+     * 反向映射（OE CW → Surface CCW；EXIF 由 CameraX 公式 (sensorOrientation + rotationDegrees) % 360 推算，sensorOrientation=90）：
+     * - OE 0   → ROTATION_0   → EXIF ROTATE_90（竖直，正常竖拍，旋转 90° 正立）
+     * - OE 90  → ROTATION_270 → EXIF NORMAL（右横持，传感器已正立，无需旋转）
+     * - OE 180 → ROTATION_180 → EXIF ROTATE_270（倒置，旋转 270° 正立）
+     * - OE 270 → ROTATION_90  → EXIF ROTATE_180（左横持，传感器上下颠倒，旋转 180° 正立）
+     *
+     * 参考实现：Google Camera2Basic 官方示例
+     * https://github.com/android/camera-samples/blob/main/Camera2Basic/.../CameraFragment.kt
      */
     private fun currentDisplayRotation(): Int = when (deviceOrientationDegrees) {
-        90 -> Surface.ROTATION_90
+        90 -> Surface.ROTATION_270
         180 -> Surface.ROTATION_180
-        270 -> Surface.ROTATION_270
+        270 -> Surface.ROTATION_90
         else -> Surface.ROTATION_0
     }
 

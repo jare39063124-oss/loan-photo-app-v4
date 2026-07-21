@@ -743,22 +743,36 @@ class Camera2CameraEngine @Inject constructor(
     /**
      * 计算 JPEG 方向：根据传感器方向与设备真实方向推算正确的 JPEG_ORIENTATION。
      *
-     * 公式：jpegOrientation = (sensorOrientation + deviceOrientation) % 360
-     * 其中 deviceOrientation 为设备从自然方向逆时针旋转的角度（0/90/180/270），
-     * 由 [OrientationEventListener] 维护，与 [android.view.Display.getRotation] 语义一致。
+     * Camera2 官方公式：jpegOrientation = (sensorOrientation + deviceOrientationCCW) % 360
+     * 其中 deviceOrientationCCW 为设备从自然方向**逆时针**旋转的角度（与 [android.view.Display.getRotation] 同约定）。
+     *
+     * 但 [deviceOrientationDegrees] 来自 [OrientationEventListener]，为**顺时针 (CW)** 约定：
+     * - OE 0 = 自然方向（顶朝上）
+     * - OE 90 = 顺时针旋转 90°（顶朝右，右横持）
+     * - OE 180 = 倒置
+     * - OE 270 = 顺时针旋转 270°（顶朝左，左横持）
+     *
+     * CW 与 CCW 方向相反，需先转换：CCW = (360 - CW) % 360。
+     * 代入官方公式：(sensorOrientation + (360 - deviceOrientationDegrees)) % 360
+     * 等价于：(sensorOrientation - deviceOrientationDegrees + 360) % 360
      *
      * 应用锁定竖屏使 Display.getRotation 恒为 0，故改用 [deviceOrientationDegrees]。
      *
      * 各方向结果（sensorOrientation=90）：
-     * - OE 0°（竖直）→ JPEG=90：像素旋转 90°，输出竖向正立
-     * - OE 90°（左横）→ JPEG=180：像素旋转 180°，输出横向正立（传感器上下颠倒需翻转）
-     * - OE 180°（倒置）→ JPEG=270：像素旋转 270°，输出竖向倒置矫正
-     * - OE 270°（右横）→ JPEG=0：不旋转，输出横向正立（传感器已正立）
+     * - OE 0°（竖直）→ JPEG=(90-0+360)%360=90：像素旋转 90°，输出竖向正立
+     * - OE 90°（右横持，顶朝右）→ JPEG=(90-90+360)%360=0：不旋转，输出横向正立（传感器已正立）
+     * - OE 180°（倒置）→ JPEG=(90-180+360)%360=270：像素旋转 270°，输出竖向倒置矫正
+     * - OE 270°（左横持，顶朝左）→ JPEG=(90-270+360)%360=180：像素旋转 180°，输出横向正立（传感器上下颠倒需翻转）
+     *
+     * 参考实现：Google Camera2Basic 官方示例
+     * https://github.com/android/camera-samples/blob/main/Camera2Basic/.../CameraFragment.kt
      */
     private fun calculateJpegOrientation(): Int {
         val sensorOrientation = currentCharacteristics
             ?.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
-        return (sensorOrientation + deviceOrientationDegrees) % 360
+        // deviceOrientationDegrees 来自 OE，为 CW 约定；Camera2 JPEG 公式需要 CCW。
+        // 转换：CCW = (360 - CW) % 360；代入公式 (sensor + CCW) % 360 等价于 (sensor - CW + 360) % 360。
+        return (sensorOrientation - deviceOrientationDegrees + 360) % 360
     }
 
     /**
