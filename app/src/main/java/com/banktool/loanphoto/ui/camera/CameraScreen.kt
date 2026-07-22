@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,7 +47,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -56,6 +59,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.PhotoType
+import com.banktool.loanphoto.ui.settings.SettingsViewModel
 import com.banktool.loanphoto.ui.theme.Accent
 import com.banktool.loanphoto.ui.theme.AccentDark
 
@@ -80,8 +84,13 @@ fun CameraScreen(
     excelUri: String,
     onClose: () -> Unit,
     viewModel: CameraViewModel = hiltViewModel(),
+    settingsViewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    // 参考线配置（黄金分割线 / 中心标 / 水平仪），由 SettingsViewModel 持久化提供
+    val guideLineConfig by settingsViewModel.guideLineConfig.collectAsStateWithLifecycle()
+    // 设备真实方向（0/90/180/270），用于水平仪绘制
+    val deviceOrientation by viewModel.deviceOrientation.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -150,6 +159,15 @@ fun CameraScreen(
             CameraPreviewView(
                 engine = viewModel.cameraEngine,
                 onZoomChange = { ratio -> viewModel.onZoomChange(ratio) },
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            // 参考线叠加层（黄金分割线 / 中心标 / 水平仪），绘制于预览之上、交互控件之下
+            CameraGuideLines(
+                goldenRatioGrid = guideLineConfig.goldenRatioGrid,
+                centerMark = guideLineConfig.centerMark,
+                levelGauge = guideLineConfig.levelGauge,
+                deviceOrientation = deviceOrientation,
                 modifier = Modifier.fillMaxSize(),
             )
 
@@ -636,6 +654,114 @@ private fun CapturingOverlay() {
                     text = "正在保存...",
                     color = Color.White,
                     fontSize = 14.sp,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 相机参考线叠加层。
+ *
+ * 在相机预览之上绘制三种参考线（均由用户设置开关控制）：
+ * 1. [goldenRatioGrid]：黄金分割线（水平 1/3、2/3 + 垂直 1/3、2/3 十字网格，半透明白色）
+ * 2. [centerMark]：画面中心短十字标（半透明白色，较网格略亮）
+ * 3. [levelGauge]：顶部水平仪（竖直持机时绿色高亮，倾斜时白色旋转显示）
+ *
+ * 所有线条使用半透明白色，不遮挡预览内容。Canvas 不拦截触摸事件。
+ *
+ * @param goldenRatioGrid 是否绘制黄金分割线
+ * @param centerMark 是否绘制中心标
+ * @param levelGauge 是否绘制水平仪
+ * @param deviceOrientation 设备真实方向（0/90/180/270）
+ * @param modifier 修饰符
+ */
+@Composable
+private fun CameraGuideLines(
+    goldenRatioGrid: Boolean,
+    centerMark: Boolean,
+    levelGauge: Boolean,
+    deviceOrientation: Int,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier.fillMaxSize()) {
+        // ===== 黄金分割线 =====
+        // 水平线 y = 1/3、2/3；垂直线 x = 1/3、2/3；半透明白色细线
+        if (goldenRatioGrid) {
+            val gridColor = Color.White.copy(alpha = 0.4f)
+            val gridStrokeWidth = 1.2.dp.toPx()
+            val xThird = size.width / 3f
+            val yThird = size.height / 3f
+            // 水平线
+            drawLine(
+                color = gridColor,
+                start = Offset(0f, yThird),
+                end = Offset(size.width, yThird),
+                strokeWidth = gridStrokeWidth,
+            )
+            drawLine(
+                color = gridColor,
+                start = Offset(0f, yThird * 2f),
+                end = Offset(size.width, yThird * 2f),
+                strokeWidth = gridStrokeWidth,
+            )
+            // 垂直线
+            drawLine(
+                color = gridColor,
+                start = Offset(xThird, 0f),
+                end = Offset(xThird, size.height),
+                strokeWidth = gridStrokeWidth,
+            )
+            drawLine(
+                color = gridColor,
+                start = Offset(xThird * 2f, 0f),
+                end = Offset(xThird * 2f, size.height),
+                strokeWidth = gridStrokeWidth,
+            )
+        }
+
+        // ===== 中心标 =====
+        // 画面中心短十字线（水平 + 垂直），总长约 20dp，半透明白色略亮于网格
+        if (centerMark) {
+            val markColor = Color.White.copy(alpha = 0.6f)
+            val markStrokeWidth = 1.2.dp.toPx()
+            val halfLen = 10.dp.toPx()
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            // 水平短横线
+            drawLine(
+                color = markColor,
+                start = Offset(cx - halfLen, cy),
+                end = Offset(cx + halfLen, cy),
+                strokeWidth = markStrokeWidth,
+            )
+            // 垂直短竖线
+            drawLine(
+                color = markColor,
+                start = Offset(cx, cy - halfLen),
+                end = Offset(cx, cy + halfLen),
+                strokeWidth = markStrokeWidth,
+            )
+        }
+
+        // ===== 水平仪 =====
+        // 顶部中央水平条（长约 80dp、宽约 2dp）：
+        // - deviceOrientation=0（竖直持机）：水平显示 + 绿色高亮（已水平）
+        // - 其余方向：按 deviceOrientation 角度旋转 + 白色半透明（非水平）
+        if (levelGauge) {
+            val barLen = 80.dp.toPx()
+            val barStrokeWidth = 2.dp.toPx()
+            val cx = size.width / 2f
+            val y = 30.dp.toPx()
+            val isLevel = deviceOrientation == 0
+            val barColor = if (isLevel) Color(0xFF4CAF50) else Color.White.copy(alpha = 0.4f)
+            val angleDeg = deviceOrientation.toFloat()
+            rotate(degrees = angleDeg, pivot = Offset(cx, y)) {
+                drawLine(
+                    color = barColor,
+                    start = Offset(cx - barLen / 2f, y),
+                    end = Offset(cx + barLen / 2f, y),
+                    strokeWidth = barStrokeWidth,
                 )
             }
         }

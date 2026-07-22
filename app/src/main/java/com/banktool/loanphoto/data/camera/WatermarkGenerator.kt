@@ -35,16 +35,19 @@ enum class WatermarkPosition {
 /**
  * 水印字号（基准 px，按图片宽度自适应缩放）。
  *
- * - LARGE 80px
- * - MEDIUM 56px
- * - SMALL 36px
+ * - LARGE 80px，水印块最大占宽 25%
+ * - MEDIUM 56px，水印块最大占宽 20%
+ * - SMALL 36px，水印块最大占宽 15%
  *
  * 最小不低于 24px（缩放后）。
+ *
+ * @param sizePx 基准字号 px
+ * @param maxBlockWidthRatio 水印块最大宽度占图片宽度的比例（超出则自动缩字号）
  */
-enum class WatermarkFontSize(val sizePx: Int) {
-    LARGE(80),
-    MEDIUM(56),
-    SMALL(36),
+enum class WatermarkFontSize(val sizePx: Int, val maxBlockWidthRatio: Float) {
+    LARGE(80, 0.25f),
+    MEDIUM(56, 0.20f),
+    SMALL(36, 0.15f),
 }
 
 /**
@@ -105,7 +108,7 @@ class WatermarkGenerator @Inject constructor() {
 
         val scale = width / BASE_WIDTH
         val marginPx = (width * EDGE_MARGIN_RATIO).toInt().coerceAtLeast(1)
-        val maxBlockWidth = (width * MAX_BLOCK_WIDTH_RATIO).toInt()
+        val maxBlockWidth = (width * fontSize.maxBlockWidthRatio).toInt()
         val padPx = (PADDING_PX * scale).toInt().coerceAtLeast(1)
         val lineGapPx = (LINE_GAP_PX * scale).toInt()
 
@@ -118,7 +121,7 @@ class WatermarkGenerator @Inject constructor() {
             color = Color.BLACK
         }
 
-        // 自适应字号：初始按档位缩放，若水印块超 85% 图片宽度则循环缩小字号直至适配
+        // 自适应字号：初始按档位缩放，若水印块超当前档位最大占宽（fontSize.maxBlockWidthRatio）则循环缩小字号直至适配
         var fontPx = (fontSize.sizePx * scale).toInt().coerceAtLeast(MIN_FONT_PX)
         var maxTextWidth: Int
         var blockWidth: Int
@@ -412,6 +415,5 @@ class WatermarkGenerator @Inject constructor() {
         const val BG_OPACITY_RATIO = 0.55f
         const val JPEG_QUALITY = 92
         const val EDGE_MARGIN_RATIO = 0.03f // 水印距图片边缘 3% 空隙
-        const val MAX_BLOCK_WIDTH_RATIO = 0.85f // 水印块最大占图片宽度 85%，超出则自动缩字号
     }
 }

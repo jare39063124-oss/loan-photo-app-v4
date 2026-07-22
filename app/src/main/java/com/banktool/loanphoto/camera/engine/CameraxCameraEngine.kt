@@ -12,6 +12,8 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -57,18 +59,28 @@ class CameraxCameraEngine @Inject constructor(
     private val orientationEventListener = object : OrientationEventListener(context) {
         override fun onOrientationChanged(degrees: Int) {
             if (degrees == ORIENTATION_UNKNOWN) return
-            deviceOrientationDegrees = quantizeDegrees(degrees)
+            val quantized = quantizeDegrees(degrees)
+            deviceOrientationDegrees = quantized
+            _deviceOrientation.value = quantized
         }
     }
 
     /** 绑定后持有，供缩放/torch 控制。 */
     private var camera: Camera? = null
 
+    /**
+     * bind() 中注册的 ON_RESUME 观察者引用，重入 bind 时先移除旧的，避免重复注册造成泄漏。
+     */
+    private var resumeObserver: LifecycleEventObserver? = null
+
     private val _zoomInfo = MutableStateFlow(ZoomInfo())
     override val zoomInfo: StateFlow<ZoomInfo> = _zoomInfo.asStateFlow()
 
     private val _cameraReady = MutableStateFlow(false)
     override val cameraReady: StateFlow<Boolean> = _cameraReady.asStateFlow()
+
+    private val _deviceOrientation = MutableStateFlow(0)
+    override val deviceOrientationFlow: StateFlow<Int> = _deviceOrientation.asStateFlow()
 
     /**
      * 当前闪光灯模式：0=OFF, 1=AUTO, 2=TORCH 常亮, 3=ON。
@@ -133,6 +145,37 @@ class CameraxCameraEngine @Inject constructor(
                 }
 
                 _cameraReady.value = true
+
+                // 注册 ON_RESUME 观察者：锁屏恢复后 CameraX 可能重置 zoomRatio，需重新同步并恢复广角
+                // 重入 bind 时先移除旧观察者，避免重复注册
+                resumeObserver?.let { lifecycleOwner.lifecycle.removeObserver(it) }
+                val observer = object : LifecycleEventObserver {
+                    override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
+                        if (event == Lifecycle.Event.ON_RESUME) {
+                            // 重新读取 zoomState，若 isWideAngleActive=true 但实际 zoomRatio>=1.0（被 CameraX 重置），恢复广角
+                            val cam = camera ?: return
+                            val zoomState = cam.cameraInfo.zoomState.value ?: return
+                            val currentRatio = zoomState.zoomRatio
+                            val minRatio = zoomState.minZoomRatio
+                            val isWideActive = _zoomInfo.value.isWideAngleActive
+                            if (isWideActive && currentRatio >= 1.0f && minRatio < 1.0f) {
+                                Timber.d("ON_RESUME 检测到广角被重置(zoomRatio=%s, minZoomRatio=%s)，恢复广角", currentRatio, minRatio)
+                                cam.cameraControl.setZoomRatio(minRatio)
+                                _zoomInfo.value = _zoomInfo.value.copy(zoomRatio = minRatio)
+                            } else {
+                                // 同步当前 zoomRatio 到 _zoomInfo
+                                _zoomInfo.value = _zoomInfo.value.copy(
+                                    zoomRatio = currentRatio,
+                                    minZoomRatio = minRatio,
+                                    maxZoomRatio = zoomState.maxZoomRatio,
+                                    hasWideAngle = minRatio < 1.0f,
+                                )
+                            }
+                        }
+                    }
+                }
+                resumeObserver = observer
+                lifecycleOwner.lifecycle.addObserver(observer)
             } catch (e: Exception) {
                 Timber.e(e, "CameraxCameraEngine 绑定相机失败")
             }

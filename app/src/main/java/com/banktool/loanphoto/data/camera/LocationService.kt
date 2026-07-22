@@ -247,6 +247,37 @@ class LocationService @Inject constructor(
     }
 
     /**
+     * 返回最近一次已知定位（不限年龄），依次尝试：
+     * 1. [cached]：5 分钟内（[CACHE_TTL_MS]）的内存缓存
+     * 2. [history]：30 秒内（[HISTORY_MAX_AGE_MS]）的内存历史（复用 [getRecentWithin]）
+     * 3. [persistedLastLocation]：DataStore 持久化的最近一次定位（不限年龄，进程重启后兜底）
+     *
+     * 与 [getRecentWithin] 的区别：本方法不限制持久化定位的年龄，用于"宁可返回旧定位也不返回 null"
+     * 的最终兜底场景（如拍照水印必须有一份定位数据）。
+     *
+     * @return 最近一次已知定位；三者均无时返回 null
+     */
+    suspend fun getLastKnownLocation(): LocationResult? = withContext(Dispatchers.IO) {
+        // 1. 优先返回 5 分钟内的内存缓存
+        cached?.let { c ->
+            val age = System.currentTimeMillis() - c.timestamp
+            if (age in 0..CACHE_TTL_MS) {
+                Timber.d("LocationService.getLastKnownLocation 使用缓存 age=%dms", age)
+                return@withContext c
+            }
+        }
+        // 2. 取 30 秒内的内存历史（含 DataStore 同窗口兜底，复用 getRecentWithin 的实现）
+        getRecentWithin(HISTORY_MAX_AGE_MS)?.let { return@withContext it }
+        // 3. 不限年龄读取 DataStore 持久化的最近一次定位
+        persistedLastLocation?.let { p ->
+            val age = System.currentTimeMillis() - p.timestamp
+            Timber.d("LocationService.getLastKnownLocation 使用持久化定位兜底 age=%dms", age)
+            return@withContext p
+        }
+        null
+    }
+
+    /**
      * 反向地理编码：lat/lng -> 地址字符串。
      *
      * Android 13+ 推荐使用 [Geocoder.getFromLocation] 的异步回调；旧版本使用同步阻塞。

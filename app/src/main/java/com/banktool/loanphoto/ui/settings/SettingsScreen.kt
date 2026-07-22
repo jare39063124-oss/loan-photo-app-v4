@@ -97,6 +97,7 @@ fun SettingsScreen(
     val namingConfig by viewModel.namingConfig.collectAsStateWithLifecycle()
     val watermarkConfig by viewModel.watermarkConfig.collectAsStateWithLifecycle()
     val photoQuality by viewModel.photoQuality.collectAsStateWithLifecycle()
+    val guideLineConfig by viewModel.guideLineConfig.collectAsStateWithLifecycle()
 
     // 设备识别码 / 设备信息（用于「关于」卡片展示，授权激活时需将识别码告知作者）
     val licenseChecker = remember { LicenseChecker() }
@@ -316,6 +317,31 @@ fun SettingsScreen(
                     selectedText = photoQuality.displayName,
                     options = PhotoQuality.entries.map { it.displayName to it },
                     onSelect = { viewModel.setPhotoQuality(it) },
+                )
+            }
+
+            // 参考线
+            SettingsCard(title = "参考线") {
+                Text(
+                    text = "相机取景界面叠加显示的参考线，辅助构图与水平校准。",
+                    fontSize = 13.sp,
+                    color = TextSecondary,
+                )
+                Spacer(modifier = Modifier.size(8.dp))
+                GuideLineToggle(
+                    label = "黄金分割线",
+                    checked = guideLineConfig.goldenRatioGrid,
+                    onCheckedChange = { viewModel.onGoldenRatioGridChange(it) },
+                )
+                GuideLineToggle(
+                    label = "中心标",
+                    checked = guideLineConfig.centerMark,
+                    onCheckedChange = { viewModel.onCenterMarkChange(it) },
+                )
+                GuideLineToggle(
+                    label = "水平仪",
+                    checked = guideLineConfig.levelGauge,
+                    onCheckedChange = { viewModel.onLevelGaugeChange(it) },
                 )
             }
 
@@ -558,6 +584,25 @@ private fun WatermarkContentToggle(
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = label, fontSize = 14.sp, color = TextSecondary)
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/**
+ * 参考线单项开关行（标签 + Switch，SpaceBetween 布局，与 [WatermarkContentToggle] 一致）。
+ */
+@Composable
+private fun GuideLineToggle(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {

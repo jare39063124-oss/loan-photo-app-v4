@@ -57,8 +57,8 @@ android {
         applicationId = "com.banktool.loanphoto"
         minSdk = 26  // Apache POI 5.x requires API 26 (MethodHandle); all target devices are API 30+
         targetSdk = 35
-        versionCode = 15
-        versionName = "4.1.3"
+        versionCode = 16
+        versionName = "4.1.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }

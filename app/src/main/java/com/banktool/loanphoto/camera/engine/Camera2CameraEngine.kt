@@ -64,9 +64,11 @@ class Camera2CameraEngine @Inject constructor(
 
     private val _zoomInfo = MutableStateFlow(ZoomInfo())
     private val _cameraReady = MutableStateFlow(false)
+    private val _deviceOrientation = MutableStateFlow(0)
 
     override val zoomInfo = _zoomInfo.asStateFlow()
     override val cameraReady = _cameraReady.asStateFlow()
+    override val deviceOrientationFlow = _deviceOrientation.asStateFlow()
 
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
@@ -140,16 +142,34 @@ class Camera2CameraEngine @Inject constructor(
     private val orientationEventListener = object : OrientationEventListener(context) {
         override fun onOrientationChanged(degrees: Int) {
             if (degrees == ORIENTATION_UNKNOWN) return
-            deviceOrientationDegrees = quantizeDegrees(degrees)
+            val quantized = quantizeDegrees(degrees)
+            deviceOrientationDegrees = quantized
+            _deviceOrientation.value = quantized
         }
     }
 
-    /** 生命周期观察者：DESTROYED 时释放相机资源。 */
+    /**
+     * 生命周期观察者：
+     * - ON_PAUSE：关闭 cameraDevice + captureSession（保留 isWideActive / textureView / handlerThread / OE）
+     * - ON_RESUME：按 isWideActive 重新 openCamera + createSession，恢复广角态
+     * - ON_DESTROY：完整释放（禁用 OE、quit handlerThread）
+     */
     private val lifecycleObserver = object : LifecycleEventObserver {
         override fun onStateChanged(source: androidx.lifecycle.LifecycleOwner, event: Lifecycle.Event) {
-            if (event == Lifecycle.Event.ON_DESTROY) {
-                Timber.d("Lifecycle ON_DESTROY，释放 Camera2 引擎")
-                release()
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    Timber.d("Lifecycle ON_PAUSE，关闭 Camera2 设备（保留广角状态）")
+                    closeCamera()
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    Timber.d("Lifecycle ON_RESUME，重新打开 Camera2 设备（按 isWideActive=%s 恢复）", isWideActive)
+                    reopenCamera()
+                }
+                Lifecycle.Event.ON_DESTROY -> {
+                    Timber.d("Lifecycle ON_DESTROY，释放 Camera2 引擎")
+                    release()
+                }
+                else -> {}
             }
         }
     }
@@ -362,6 +382,41 @@ class Camera2CameraEngine @Inject constructor(
         if (handlerThread.isAlive) return
         handlerThread = HandlerThread("camera2-bg").apply { start() }
         bgHandler = Handler(handlerThread.looper)
+    }
+
+    /**
+     * 锁屏/ON_PAUSE 时关闭相机设备与会话，保留状态（isWideActive / textureView / handlerThread / OE）。
+     *
+     * 与 [release] 的区别：不调用 orientationEventListener.disable()、不 quit handlerThread、
+     * 不清空 lifecycleOwner，便于 ON_RESUME 时快速恢复。
+     */
+    private fun closeCamera() {
+        try { captureSession?.close() } catch (e: Exception) { Timber.w(e, "closeCamera 关闭 session 失败") }
+        try { cameraDevice?.close() } catch (e: Exception) { Timber.w(e, "closeCamera 关闭 device 失败") }
+        captureSession = null
+        cameraDevice = null
+        _cameraReady.value = false
+    }
+
+    /**
+     * 解锁/ON_RESUME 时按 [isWideActive] 重新打开相机并建会话。
+     *
+     * - isWideActive=true 且使用独立 logical 策略：openCamera(widePhysicalId)
+     * - isWideActive=true 且使用物理子相机策略：openCamera(logicalCameraId) 后由 createSession 设置 setPhysicalCameraId
+     * - isWideActive=false：openCamera(logicalCameraId)
+     */
+    private fun reopenCamera() {
+        ensureBgThread()
+        val targetId = if (isWideActive && widePhysicalId != null) {
+            if (wideIsSeparateLogicalId) widePhysicalId!! else logicalCameraId
+        } else {
+            logicalCameraId
+        }
+        if (targetId.isEmpty()) {
+            Timber.e("reopenCamera: 无可用 camera id")
+            return
+        }
+        openCamera(targetId) { createSession() }
     }
 
     /**

@@ -33,6 +33,10 @@ data class ZoomInfo(
 interface CameraEngine {
     val zoomInfo: StateFlow<ZoomInfo>
     val cameraReady: StateFlow<Boolean>
+
+    /** 设备真实方向（0/90/180/270），由 OrientationEventListener 提供，供 UI 绘制水平仪参考线。 */
+    val deviceOrientationFlow: StateFlow<Int>
+
     fun bind(container: FrameLayout, lifecycleOwner: LifecycleOwner)
     fun captureToFile(
         outputFile: File,

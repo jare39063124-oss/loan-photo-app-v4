@@ -1,5 +1,11 @@
 package com.banktool.loanphoto.ui.settings
 
+import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.banktool.loanphoto.data.camera.PhotoQuality
@@ -14,12 +20,36 @@ import com.banktool.loanphoto.data.watermark.WatermarkConfigRepository
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.PhotoType
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Calendar
 import javax.inject.Inject
+
+/**
+ * 相机参考线配置。
+ *
+ * - [goldenRatioGrid]：黄金分割线（默认开启）
+ * - [centerMark]：中心标（默认开启）
+ * - [levelGauge]：水平仪（默认开启）
+ *
+ * 持久化到独立 DataStore（`camera_guide.preferences_pb`），与水印 / 命名配置互不影响。
+ */
+data class GuideLineConfig(
+    val goldenRatioGrid: Boolean = true,
+    val centerMark: Boolean = true,
+    val levelGauge: Boolean = true,
+)
+
+/** 参考线配置 DataStore（独立于 watermark / naming，避免修改既有仓库）。 */
+private val Context.guideLineDataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "camera_guide",
+)
 
 /**
  * 设置页 ViewModel。
@@ -32,14 +62,18 @@ import javax.inject.Inject
  * 5. 提供水印设置入口 [setWatermarkEnabled] / [setWatermarkFontSize] /
  *    [setWatermarkPosition] / [setWatermarkOpacity] /
  *    [setShowDate] / [setShowSerial] / [setShowAddress] / [setShowLatlng]
+ * 6. 暴露相机参考线配置 [guideLineConfig]（DataStore 持久化，实时响应）
+ * 7. 提供参考线开关入口 [onGoldenRatioGridChange] / [onCenterMarkChange] / [onLevelGaugeChange]
  *
  * 注入 [NamingConfigRepository]、[NamingRuleGenerator] 与 [WatermarkConfigRepository]（均 @Singleton）。
+ * 参考线配置直接通过应用级 [Context] 持久化到独立 DataStore（`camera_guide`）。
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val namingConfigRepository: NamingConfigRepository,
     private val namingRuleGenerator: NamingRuleGenerator,
     private val watermarkConfigRepository: WatermarkConfigRepository,
+    @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     /** 命名规则配置（初始值全 NONE，订阅 DataStore 后立即更新为持久化值）。 */
@@ -53,6 +87,17 @@ class SettingsViewModel @Inject constructor(
     /** 照片质量（初始值 HIGH，订阅 DataStore 后立即更新为持久化值）。 */
     val photoQuality: StateFlow<PhotoQuality> = watermarkConfigRepository.getPhotoQuality()
         .stateIn(viewModelScope, SharingStarted.Eagerly, PhotoQuality.HIGH)
+
+    /** 相机参考线配置（初始值三项全开，订阅 DataStore 后立即更新为持久化值）。 */
+    val guideLineConfig: StateFlow<GuideLineConfig> = context.guideLineDataStore.data
+        .map { prefs ->
+            GuideLineConfig(
+                goldenRatioGrid = prefs[KEY_GOLDEN_RATIO_GRID] ?: true,
+                centerMark = prefs[KEY_CENTER_MARK] ?: true,
+                levelGauge = prefs[KEY_LEVEL_GAUGE] ?: true,
+            )
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, GuideLineConfig())
 
     /**
      * 设置某一段命名配置并持久化。
@@ -111,6 +156,33 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { watermarkConfigRepository.setPhotoQuality(v) }
     }
 
+    /** 开启 / 关闭黄金分割线参考线。 */
+    fun onGoldenRatioGridChange(v: Boolean) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                context.guideLineDataStore.edit { prefs -> prefs[KEY_GOLDEN_RATIO_GRID] = v }
+            }
+        }
+    }
+
+    /** 开启 / 关闭中心标参考线。 */
+    fun onCenterMarkChange(v: Boolean) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                context.guideLineDataStore.edit { prefs -> prefs[KEY_CENTER_MARK] = v }
+            }
+        }
+    }
+
+    /** 开启 / 关闭水平仪参考线。 */
+    fun onLevelGaugeChange(v: Boolean) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                context.guideLineDataStore.edit { prefs -> prefs[KEY_LEVEL_GAUGE] = v }
+            }
+        }
+    }
+
     /**
      * 根据当前配置生成示例文件名（用于设置页实时预览）。
      *
@@ -145,4 +217,10 @@ class SettingsViewModel @Inject constructor(
         set(Calendar.SECOND, 0)
         set(Calendar.MILLISECOND, 0)
     }.timeInMillis
+
+    private companion object {
+        val KEY_GOLDEN_RATIO_GRID = booleanPreferencesKey("golden_ratio_grid")
+        val KEY_CENTER_MARK = booleanPreferencesKey("center_mark")
+        val KEY_LEVEL_GAUGE = booleanPreferencesKey("level_gauge")
+    }
 }

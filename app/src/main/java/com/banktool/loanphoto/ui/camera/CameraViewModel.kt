@@ -110,6 +110,12 @@ class CameraViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
 
+    /**
+     * 设备真实方向（0/90/180/270），由 [CameraEngine.deviceOrientationFlow] 提供，
+     * 供 UI 绘制水平仪参考线。直接转发引擎流，UI 用 collectAsStateWithLifecycle 订阅。
+     */
+    val deviceOrientation: StateFlow<Int> = cameraEngine.deviceOrientationFlow
+
     /** 主线程 Executor（拍照回调）。 */
     val mainExecutor: Executor by lazy { ContextCompat.getMainExecutor(app) }
 
@@ -373,7 +379,10 @@ class CameraViewModel @Inject constructor(
                 val primaryKey = primary.progressKey
                 val photoType = _uiState.value.currentPhotoType.displayName
 
-                // 1. 位置：优先实时定位；失败时回退 10s 内历史定位（地下/无信号场景兜底）
+                // 1. 位置：三级回退
+                //   ① 实时定位（800ms 超时）
+                //   ② 5 分钟内历史定位（地下/无信号场景兜底）
+                //   ③ getLastKnownLocation：不限年龄的最近一次已知定位（DataStore 持久化兜底）
                 var location: LocationResult? = withContext(Dispatchers.IO) {
                     try {
                         withTimeoutOrNull(CAPTURE_LOCATION_TIMEOUT_MS) {
@@ -386,19 +395,30 @@ class CameraViewModel @Inject constructor(
                 }
                 var locationFallback = false
                 if (location == null) {
-                    // 兜底：取 10s 内最近一次有效定位，避免地下拍照等满 15s 超时
+                    // 兜底 ②：取 5 分钟内最近一次有效定位，扩大窗口避免地下拍照等满 15s 超时
                     location = withContext(Dispatchers.IO) {
                         try {
-                            locationService.getRecentWithin(10_000)
+                            locationService.getRecentWithin(300_000)
                         } catch (e: Exception) {
                             Timber.w(e, "兜底历史定位查询失败")
                             null
                         }
                     }
+                    if (location == null) {
+                        // 兜底 ③：不限年龄的最近一次已知定位（DataStore 持久化，进程重启后仍可用）
+                        location = withContext(Dispatchers.IO) {
+                            try {
+                                locationService.getLastKnownLocation()
+                            } catch (e: Exception) {
+                                Timber.w(e, "兜底 getLastKnownLocation 查询失败")
+                                null
+                            }
+                        }
+                    }
                     if (location != null) {
                         locationFallback = true
                         Timber.w(
-                            "LocationService 实时定位失败，使用 10s 内历史定位兜底 fallback=true age=%dms",
+                            "LocationService 实时定位失败，使用历史/持久化定位兜底 fallback=true age=%dms",
                             System.currentTimeMillis() - location.timestamp,
                         )
                     }
@@ -636,6 +656,6 @@ class CameraViewModel @Inject constructor(
 
     private companion object {
         const val REQUEST_CODE_CAMERA = 1001
-        const val CAPTURE_LOCATION_TIMEOUT_MS = 1500L
+        const val CAPTURE_LOCATION_TIMEOUT_MS = 800L
     }
 }

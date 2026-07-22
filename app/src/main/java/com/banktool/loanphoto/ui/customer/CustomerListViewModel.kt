@@ -84,6 +84,9 @@ class CustomerListViewModel @Inject constructor(
         val photoTypeCounts: Map<String, Map<PhotoType, Int>> = emptyMap(),
         val searchField: SearchField = SearchField.BORROWER,
         val searchQuery: String = "",
+        // 二级搜索：在一级结果基础上二次过滤；secondSearchQuery 为空时不生效
+        val secondSearchField: SearchField = SearchField.SERIAL,
+        val secondSearchQuery: String = "",
         val excelUri: String = "",
         val excelFileName: String = "",
         val error: String? = null,
@@ -173,6 +176,8 @@ class CustomerListViewModel @Inject constructor(
                         excelUri = uri,
                         excelFileName = resolvedName,
                         searchQuery = "",
+                        secondSearchQuery = "",
+                        secondSearchField = SearchField.SERIAL,
                         error = null,
                         rowRemarks = rowRemarks,
                         batchMarkedKeys = batchMarkedKeys,
@@ -241,7 +246,11 @@ class CustomerListViewModel @Inject constructor(
      */
     fun onSearchQueryChange(query: String) {
         _uiState.update { current ->
-            val filtered = filterRows(current.rows, query, current.searchField, current.rowRemarks, current.photoCounts)
+            val filtered = applyTwoLevelFilter(
+                current.rows, query, current.searchField,
+                current.secondSearchQuery, current.secondSearchField,
+                current.rowRemarks, current.photoCounts,
+            )
             current.copy(searchQuery = query, filteredIndices = filtered)
         }
     }
@@ -251,8 +260,42 @@ class CustomerListViewModel @Inject constructor(
      */
     fun onSearchFieldChange(field: SearchField) {
         _uiState.update { current ->
-            val filtered = filterRows(current.rows, current.searchQuery, field, current.rowRemarks, current.photoCounts)
+            val filtered = applyTwoLevelFilter(
+                current.rows, current.searchQuery, field,
+                current.secondSearchQuery, current.secondSearchField,
+                current.rowRemarks, current.photoCounts,
+            )
             current.copy(searchField = field, filteredIndices = filtered)
+        }
+    }
+
+    /**
+     * 二级搜索：输入即过滤（在一级结果基础上二次过滤）。
+     *
+     * [query] 为空时二级过滤不生效，直接返回一级结果。
+     */
+    fun onSecondSearchQueryChange(query: String) {
+        _uiState.update { current ->
+            val filtered = applyTwoLevelFilter(
+                current.rows, current.searchQuery, current.searchField,
+                query, current.secondSearchField,
+                current.rowRemarks, current.photoCounts,
+            )
+            current.copy(secondSearchQuery = query, filteredIndices = filtered)
+        }
+    }
+
+    /**
+     * 切换二级搜索字段后重新过滤。
+     */
+    fun onSecondSearchFieldChange(field: SearchField) {
+        _uiState.update { current ->
+            val filtered = applyTwoLevelFilter(
+                current.rows, current.searchQuery, current.searchField,
+                current.secondSearchQuery, field,
+                current.rowRemarks, current.photoCounts,
+            )
+            current.copy(secondSearchField = field, filteredIndices = filtered)
         }
     }
 
@@ -302,7 +345,11 @@ class CustomerListViewModel @Inject constructor(
                 val rowRemarks = progressRepository.getRowRemarks()
                 val batchMarkedKeys = progressRepository.getBatchMarkedKeys()
                 _uiState.update {
-                    val filtered = filterRows(it.rows, it.searchQuery, it.searchField, rowRemarks, stats.counts)
+                    val filtered = applyTwoLevelFilter(
+                        it.rows, it.searchQuery, it.searchField,
+                        it.secondSearchQuery, it.secondSearchField,
+                        rowRemarks, stats.counts,
+                    )
                     it.copy(
                         photoCounts = stats.counts,
                         photoTypeCounts = stats.typeCounts,
@@ -628,44 +675,90 @@ class CustomerListViewModel @Inject constructor(
         }
 
     /**
-     * 按 [field] 和 [query] 过滤行，返回匹配的 rowIndex 列表。
-     * query 为空时返回全集（UNVISITED 状态过滤除外，它忽略 query）。
+     * 两级过滤：先用一级条件过滤，再用二级条件在一级结果上二次过滤。
      *
-     * - REMARK 字段查 [rowRemarks] (progress.json 的 _row_remarks[行号])
-     * - UNVISITED 字段忽略 query，直接返回 photoCount==0 的行
-     * - VISITED 字段忽略 query，直接返回 photoCount>0 的行
+     * 二级 [secondQuery] 为空时直接返回一级结果（二级过滤不生效）。
+     * 返回匹配的 rowIndex 列表。
      */
-    private fun filterRows(
+    private fun applyTwoLevelFilter(
+        rows: List<CustomerRow>,
+        firstQuery: String,
+        firstField: SearchField,
+        secondQuery: String,
+        secondField: SearchField,
+        rowRemarks: Map<String, String>,
+        photoCounts: Map<String, Int>,
+    ): List<Int> {
+        // 一级过滤
+        val firstFiltered = applySingleFilter(rows, firstQuery, firstField, rowRemarks, photoCounts)
+        // 二级过滤：query 为空时跳过，直接返回一级结果
+        val finalFiltered = if (secondQuery.isBlank()) {
+            firstFiltered
+        } else {
+            applySingleFilter(firstFiltered, secondQuery, secondField, rowRemarks, photoCounts)
+        }
+        return finalFiltered.map { it.rowIndex }
+    }
+
+    /**
+     * 单级过滤：按 [field] 和 [query] 过滤行，返回匹配的 CustomerRow 列表。
+     *
+     * - VISITED/UNVISITED：先按状态过滤（photoCount>0 / ==0），
+     *   query 非空时再按文本匹配全量字段（序号 / 客户名 / 地址 / 备注，任一命中）
+     * - 其他字段：query 为空时返回全集；query 非空时按指定字段匹配
+     *
+     * REMARK 字段查 [rowRemarks]（progress.json 的 _row_remarks[行号]）。
+     */
+    private fun applySingleFilter(
         rows: List<CustomerRow>,
         query: String,
         field: SearchField,
         rowRemarks: Map<String, String>,
         photoCounts: Map<String, Int>,
-    ): List<Int> {
-        if (field == SearchField.UNVISITED) {
-            return rows.filter { row ->
-                (photoCounts[row.progressKey] ?: 0) == 0
-            }.map { it.rowIndex }
+    ): List<CustomerRow> {
+        // VISITED/UNVISITED：先按状态过滤，再按文本匹配全量字段
+        if (field == SearchField.UNVISITED || field == SearchField.VISITED) {
+            val wantVisited = field == SearchField.VISITED
+            val statusFiltered = rows.filter { row ->
+                val count = photoCounts[row.progressKey] ?: 0
+                if (wantVisited) count > 0 else count == 0
+            }
+            if (query.isBlank()) return statusFiltered
+            val keyword = query.trim()
+            return statusFiltered.filter { row -> matchAnyField(row, keyword, rowRemarks) }
         }
-        if (field == SearchField.VISITED) {
-            return rows.filter { row ->
-                (photoCounts[row.progressKey] ?: 0) > 0
-            }.map { it.rowIndex }
-        }
-        if (query.isBlank()) return rows.map { it.rowIndex }
+        // 普通字段：query 为空时返回全集
+        if (query.isBlank()) return rows
         val keyword = query.trim()
-        return rows.asSequence()
-            .filter { row -> matchField(row, keyword, field, rowRemarks, photoCounts) }
-            .map { it.rowIndex }
-            .toList()
+        return rows.filter { row -> matchField(row, keyword, field, rowRemarks) }
     }
 
+    /**
+     * 全量字段文本匹配：序号 / 客户名 / 地址 / 备注，任一包含即命中。
+     * 用于 VISITED/UNVISITED 选中后的文本搜索。
+     */
+    private fun matchAnyField(
+        row: CustomerRow,
+        keyword: String,
+        rowRemarks: Map<String, String>,
+    ): Boolean {
+        if (row.serial.contains(keyword, ignoreCase = true)) return true
+        if (row.borrower.contains(keyword, ignoreCase = true)) return true
+        if (row.addrGeneral.contains(keyword, ignoreCase = true)) return true
+        if (row.addrDetail.contains(keyword, ignoreCase = true)) return true
+        val remark = rowRemarks[row.rowIndex.toString()] ?: row.remark
+        if (remark.contains(keyword, ignoreCase = true)) return true
+        return false
+    }
+
+    /**
+     * 按指定 [field] 匹配单个字段（非状态字段）。
+     */
     private fun matchField(
         row: CustomerRow,
         keyword: String,
         field: SearchField,
         rowRemarks: Map<String, String>,
-        photoCounts: Map<String, Int>,
     ): Boolean {
         return when (field) {
             SearchField.SERIAL -> row.serial.contains(keyword, ignoreCase = true)
@@ -677,12 +770,8 @@ class CustomerListViewModel @Inject constructor(
                 val remark = rowRemarks[row.rowIndex.toString()] ?: row.remark
                 remark.contains(keyword, ignoreCase = true)
             }
-            SearchField.UNVISITED -> {
-                (photoCounts[row.progressKey] ?: 0) == 0
-            }
-            SearchField.VISITED -> {
-                (photoCounts[row.progressKey] ?: 0) > 0
-            }
+            // VISITED/UNVISITED 的文本匹配由 matchAnyField 处理，此处不应到达
+            SearchField.UNVISITED, SearchField.VISITED -> false
         }
     }
 }

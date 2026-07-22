@@ -20,8 +20,8 @@ object ReportPromptBuilder {
 
 【字段定义】
 输出纯 JSON 数组，每个客户 1 行（同客户多抵押物合并为 1 行）：
-- collateral_info：抵押物清单，逐条列出地址（如「1. 沈阳市XX区XX路XX号；2. 沈阳市YY区YY路YY号」）
-- field_description：现状描述，参考条目备注(remark)/走访备注(visit_note)/特殊日志(special_log)中实际提到的使用情况、户型、现状（如「抵押物作为仓库使用，户型三室两厅」）
+- collateral_info：抵押物/抵债资产清单，逐条列出地址和面积（如「1. 沈阳市XX区XX路XX号，面积XX㎡；2. 沈阳市YY区YY路YY号，面积YY㎡」）。同一借款人存在多个抵押物时必须全部列出。
+- field_description：现状描述，必须逐条参考每个抵押物条目的备注(remark)原文，将备注内容融入描述。走访备注(visit_note)/特殊日志(special_log)中实际提到的使用情况、户型、现状也应参考。示例：备注「土地为国有出让教育用地，原为学生宿舍目前闲置，共计7层」→ 现状描述须包含「土地为国有出让教育用地，原为学生宿舍目前闲置，共计7层」表述。多个抵押物时按地址逐条描述。
 - risk_alert：风险提示，无明显风险填「暂未发现明显风险」，有风险需具体描述
 - summary：基础内容固定为「经实地查勘，抵押物暂未发现明显异常，建议关注企业经营情况，维护我行资金安全」；有条目备注/风险/特殊日志额外信息时追加其后，无则只填这一句
 
@@ -40,7 +40,7 @@ visit_note（走访备注）最高优先级，必须逐字逐句参考；remark�
 纯 JSON 数组，不要 markdown 代码块标记，不要解释文字：
 {
   "customer_name": "客户名称",
-  "collateral_info": "抵押物清单，逐条列出地址（如：1. 沈阳市XX区XX路XX号；2. 沈阳市YY区YY路YY号）",
+  "collateral_info": "抵押物/抵债资产清单，逐条列出地址和面积（如：1. 沈阳市XX区XX路XX号，面积XX㎡；2. 沈阳市YY区YY路YY号，面积YY㎡）",
   "field_description": "现状描述（参考备注，如：抵押物作为仓库使用，户型三室两厅）",
   "risk_alert": "风险提示",
   "summary": "汇总说明"
@@ -71,6 +71,9 @@ visit_note（走访备注）最高优先级，必须逐字逐句参考；remark�
         // 按 borrower 分组（同客户多抵押物合并）
         val groupedByBorrower = visitedRecords.groupBy { it.first.borrower }
         sb.appendLine("【客户详情】")
+        // 客户数据无独立面积字段：面积信息可能存在于 remark 原文或 visit_note 中，
+        // 提示 AI 如遇面积信息须一并写入 collateral_info
+        sb.appendLine("（注：如以下备注或走访信息中包含面积信息，请一并写入 collateral_info 的对应条目。）")
         for ((borrower, records) in groupedByBorrower) {
             sb.appendLine("客户：$borrower")
             for ((row, photoRecord) in records) {
@@ -78,8 +81,13 @@ visit_note（走访备注）最高优先级，必须逐字逐句参考；remark�
                 sb.appendLine("  性质：${row.propertyType}")
                 sb.appendLine("  照片数：${photoRecord.photos.size}")
                 sb.appendLine("  照片类型：${photoRecord.types.joinToString("、")}")
-                if (photoRecord.remark.isNotEmpty()) {
-                    sb.appendLine("  备注：${photoRecord.remark}")
+                // Excel 原始备注(remark)原文：field_description 须逐条参考，必须输出
+                if (row.remark.isNotEmpty()) {
+                    sb.appendLine("  备注(remark原文)：${row.remark}")
+                }
+                // App 内编辑的行级备注（progress.json _row_remarks），与 Excel 原文可能不同
+                if (photoRecord.remark.isNotEmpty() && photoRecord.remark != row.remark) {
+                    sb.appendLine("  备注(走访编辑)：${photoRecord.remark}")
                 }
             }
             sb.appendLine()

@@ -67,6 +67,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -412,7 +414,7 @@ fun CustomerListScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            // 搜索栏
+            // 一级搜索栏
             SearchBarRow(
                 searchField = uiState.searchField,
                 searchQuery = uiState.searchQuery,
@@ -423,7 +425,23 @@ fun CustomerListScreen(
                 onToggleSelectAll = viewModel::toggleSelectAll,
             )
 
+            // 二级搜索栏：在一级结果基础上二次过滤，尺寸约为一级的 80%
             Spacer(modifier = Modifier.height(4.dp))
+            SearchBarRow(
+                searchField = uiState.secondSearchField,
+                searchQuery = uiState.secondSearchQuery,
+                allFilteredSelected = false,
+                hasFilteredItems = false,
+                onSearchQueryChange = viewModel::onSecondSearchQueryChange,
+                onSearchFieldChange = viewModel::onSecondSearchFieldChange,
+                onToggleSelectAll = {},
+                showSelectAll = false,
+                fontSize = 12.sp,
+                fieldChipWidth = 96.dp,
+                rowVerticalPadding = 2.dp,
+                chipHorizontalPadding = 10.dp,
+                chipVerticalPadding = 6.dp,
+            )
 
             // 添加查勘条目按钮（仅在有数据时显示，避免无文件时点击无响应）
             if (uiState.rows.isNotEmpty()) {
@@ -544,7 +562,14 @@ fun CustomerListScreen(
 }
 
 /**
- * 搜索栏：全选 CheckBox + 字段下拉 + 输入框。
+ * 搜索栏：全选 CheckBox（可选） + 字段下拉 + 输入框。
+ *
+ * 一级搜索栏显示全选 CheckBox；二级搜索栏通过 [showSelectAll]=false 隐藏 CheckBox，
+ * 并通过 [fontSize]/[fieldChipWidth]/[rowVerticalPadding]/[chipHorizontalPadding]/
+ * [chipVerticalPadding] 收紧尺寸（约为一级的 80%）。
+ *
+ * v4.1.4 起所有字段（含 VISITED/UNVISITED）均显示输入框；
+ * VISITED/UNVISITED 选中时由 ViewModel 先按状态过滤再按文本匹配全量字段。
  */
 @Composable
 private fun SearchBarRow(
@@ -555,6 +580,13 @@ private fun SearchBarRow(
     onSearchQueryChange: (String) -> Unit,
     onSearchFieldChange: (SearchField) -> Unit,
     onToggleSelectAll: () -> Unit,
+    // 二级搜索栏样式参数（默认值匹配一级搜索栏）
+    showSelectAll: Boolean = true,
+    fontSize: TextUnit = 14.sp,
+    fieldChipWidth: Dp = 112.dp,
+    rowVerticalPadding: Dp = 4.dp,
+    chipHorizontalPadding: Dp = 12.dp,
+    chipVerticalPadding: Dp = 10.dp,
 ) {
     var dropdownExpanded by remember { mutableStateOf(false) }
 
@@ -562,22 +594,23 @@ private fun SearchBarRow(
         modifier = Modifier
             .fillMaxWidth()
             // vertical 缩短至 4dp（原 8dp），让「添加查勘条目」按钮更贴近搜索栏，
-            // 为列表条目留出更多垂直空间。
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            // 为列表条目留出更多垂直空间。二级搜索栏通过 rowVerticalPadding 进一步收紧。
+            .padding(horizontal = 8.dp, vertical = rowVerticalPadding),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 全选 CheckBox（置于搜索栏最左侧）
-        Checkbox(
-            checked = allFilteredSelected,
-            onCheckedChange = { onToggleSelectAll() },
-            enabled = hasFilteredItems,
-            colors = CheckboxDefaults.colors(
-                checkedColor = Accent,
-                uncheckedColor = TextSecondary,
-            ),
-        )
-
-        Spacer(modifier = Modifier.width(8.dp))
+        // 全选 CheckBox（仅一级搜索栏显示，置于最左侧）
+        if (showSelectAll) {
+            Checkbox(
+                checked = allFilteredSelected,
+                onCheckedChange = { onToggleSelectAll() },
+                enabled = hasFilteredItems,
+                colors = CheckboxDefaults.colors(
+                    checkedColor = Accent,
+                    uncheckedColor = TextSecondary,
+                ),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+        }
 
         // 字段下拉触发器
         Box {
@@ -586,16 +619,19 @@ private fun SearchBarRow(
                 color = CardColor,
                 border = androidx.compose.foundation.BorderStroke(1.dp, Divider),
                 modifier = Modifier
-                    .width(112.dp)
+                    .width(fieldChipWidth)
                     .clickable { dropdownExpanded = true },
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(
+                        horizontal = chipHorizontalPadding,
+                        vertical = chipVerticalPadding,
+                    ),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
                         text = searchField.displayName,
-                        fontSize = 14.sp,
+                        fontSize = fontSize,
                         color = TextColor,
                         modifier = Modifier.weight(1f),
                     )
@@ -624,54 +660,34 @@ private fun SearchBarRow(
 
         Spacer(modifier = Modifier.width(8.dp))
 
-        // 搜索输入框：状态过滤字段（如"未走访"）隐藏输入框，显示提示文字
-        if (searchField.isStatusFilter) {
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+        // 搜索输入框：所有字段（含 VISITED/UNVISITED）均显示输入框。
+        // VISITED/UNVISITED 选中时由 ViewModel 先按状态过滤再按文本匹配。
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = onSearchQueryChange,
+            modifier = Modifier.weight(1f),
+            placeholder = {
+                Text(
+                    text = "搜索${searchField.displayName}",
+                    color = TextSecondary,
+                    fontSize = fontSize,
+                )
+            },
+            leadingIcon = {
                 Icon(
                     imageVector = Icons.Filled.Search,
                     contentDescription = null,
                     tint = TextSecondary,
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "已自动筛选未走访条目",
-                    color = TextSecondary,
-                    fontSize = 14.sp,
-                )
-            }
-        } else {
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = onSearchQueryChange,
-                modifier = Modifier.weight(1f),
-                placeholder = {
-                    Text(
-                        text = "搜索${searchField.displayName}",
-                        color = TextSecondary,
-                        fontSize = 14.sp,
-                    )
-                },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Filled.Search,
-                        contentDescription = null,
-                        tint = TextSecondary,
-                    )
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(8.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Accent,
-                    unfocusedBorderColor = Divider,
-                ),
-                textStyle = TextStyle(fontSize = 14.sp, color = TextColor),
-            )
-        }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(8.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Accent,
+                unfocusedBorderColor = Divider,
+            ),
+            textStyle = TextStyle(fontSize = fontSize, color = TextColor),
+        )
     }
 }
 
