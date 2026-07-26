@@ -28,12 +28,14 @@ import com.banktool.loanphoto.domain.repository.ProgressRepository
 import com.banktool.loanphoto.util.ProgressKeyUtil
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -356,11 +358,14 @@ class CameraViewModel @Inject constructor(
      * 1. 校验文件 size > 0
      * 2. 获取位置（LocationService）
      * 3. 生成水印 3 段内容（日期 / 地址 / 经纬度）
-     * 4. 调用 WatermarkGenerator.drawAndSave 覆盖原文件
-     * 5. 生成缩略图
-     * 6. markPhoto（主 key） + markPhotoBatch（其他 keys）
-     * 7. 显示 Toast "已拍摄 N 张"
-     * 8. clearCameraSession
+     * 4. 调用 WatermarkGenerator.drawAndSave 覆盖原文件（必须先完成，后续步骤依赖 savedFile）
+     * 5. 并行执行（水印完成后无相互依赖）：
+     *    - copyToMediaStore（系统相册可见）
+     *    - generateThumbnail（缩略图）
+     *    - markPhoto + markPhotoBatch（进度持久化）
+     *    - addProgressKey（Excel 数据索引）
+     * 6. 显示 Toast "已拍摄 N 张"
+     * 7. clearCameraSession
      */
     private fun onImageSaved(savedFile: File, primary: CustomerRow) {
         if (!savedFile.exists() || savedFile.length() <= 0) {
@@ -464,50 +469,68 @@ class CameraViewModel @Inject constructor(
                     Timber.w("水印生成失败，保留原图: %s", savedFile.absolutePath)
                 }
 
-                // 3.5 复制到 MediaStore（DCIM/LoanPhoto），使照片在系统相册可见
+                // 4. 并行后处理：水印已完成，savedFile 已写入水印。
+                // 以下四步无相互依赖（MediaStore 读 savedFile / 缩略图读 savedFile /
+                // markPhoto 写 JSON / addProgressKey 写 JSON），改为并行执行以缩短总耗时。
+                // isCapturing=true 期间不会发起新拍照，otherKeys/md5 快照在此处一次性读取即可。
+                val otherKeys = _uiState.value.multiSelectRows.map { it.progressKey }
+                val md5 = _uiState.value.excelUriMd5
+
+                // 4.1 复制到 MediaStore（DCIM/LoanPhoto），使照片在系统相册可见。
                 // app 私有目录（getExternalFilesDir）不被 MediaScanner 索引，
                 // 必须通过 MediaStore API 写入公共 DCIM 目录才能在相册可见。
                 // 多选拍摄时物理文件只有一份，仅需复制一次。
-                copyToMediaStore(savedFile)
+                val mediaStoreDeferred = async(Dispatchers.IO) {
+                    runCatching { copyToMediaStore(savedFile) }
+                        .onFailure { Timber.w(it, "copyToMediaStore 失败") }
+                }
 
-                // 4. 缩略图
-                val thumbPath = withContext(Dispatchers.IO) {
+                // 4.2 缩略图生成（结果供 UI 更新使用）
+                val thumbnailDeferred = async(Dispatchers.IO) {
                     runCatching {
                         thumbnailGenerator.generateThumbnail(
                             sourcePath = savedFile.absolutePath,
                             progressKey = primaryKey,
                         )
-                    }.getOrNull()
+                    }.onFailure { Timber.w(it, "缩略图生成失败") }
                 }
 
-                // 5. 进度持久化
-                val otherKeys = _uiState.value.multiSelectRows.map { it.progressKey }
-                progressRepository.markPhoto(
-                    key = primaryKey,
-                    photoPath = savedFile.absolutePath,
-                    photoType = photoType,
-                )
-                if (otherKeys.isNotEmpty()) {
-                    progressRepository.markPhotoBatch(
-                        keys = otherKeys,
-                        photoPath = savedFile.absolutePath,
-                        photoType = photoType,
-                    )
-                }
-
-                // 5.5 维护 excel_data_index.json：把本次写入的 progressKey 登记到索引，
-                // 供 clearData 等功能按 Excel 维度批量清理。索引失败不影响拍照主流程。
-                val md5 = _uiState.value.excelUriMd5
-                if (md5.isNotBlank()) {
-                    try {
-                        excelDataIndexRepository.addProgressKey(md5, primaryKey)
-                        for (k in otherKeys) {
-                            excelDataIndexRepository.addProgressKey(md5, k)
+                // 4.3 进度持久化：主 key 走 markPhoto，多选其他 keys 走 markPhotoBatch
+                val markPhotoDeferred = async(Dispatchers.IO) {
+                    runCatching {
+                        progressRepository.markPhoto(
+                            key = primaryKey,
+                            photoPath = savedFile.absolutePath,
+                            photoType = photoType,
+                        )
+                        if (otherKeys.isNotEmpty()) {
+                            progressRepository.markPhotoBatch(
+                                keys = otherKeys,
+                                photoPath = savedFile.absolutePath,
+                                photoType = photoType,
+                            )
                         }
-                    } catch (e: Exception) {
-                        Timber.w(e, "addProgressKey 失败")
+                    }.onFailure { Timber.w(it, "markPhoto/markPhotoBatch 失败") }
+                }
+
+                // 4.4 维护 excel_data_index.json：把本次写入的 progressKey 登记到索引，
+                // 供 clearData 等功能按 Excel 维度批量清理。索引失败不影响拍照主流程。
+                val addIndexDeferred = async(Dispatchers.IO) {
+                    if (md5.isNotBlank()) {
+                        runCatching {
+                            excelDataIndexRepository.addProgressKey(md5, primaryKey)
+                            for (k in otherKeys) {
+                                excelDataIndexRepository.addProgressKey(md5, k)
+                            }
+                        }.onFailure { Timber.w(it, "addProgressKey 失败") }
                     }
                 }
+
+                // 等待所有并行任务完成（joinAll 不抛异常；各任务内部已用 runCatching 兜底）
+                joinAll(mediaStoreDeferred, thumbnailDeferred, markPhotoDeferred, addIndexDeferred)
+
+                // 取缩略图结果供 UI 使用（此时已完成，立即返回）
+                val thumbPath = thumbnailDeferred.await().getOrNull()
 
                 // 6. UI 更新
                 val newSessionCount = _uiState.value.photosThisSession + 1

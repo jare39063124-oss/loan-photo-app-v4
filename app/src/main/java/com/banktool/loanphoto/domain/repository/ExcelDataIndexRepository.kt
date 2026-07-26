@@ -16,4 +16,7 @@ interface ExcelDataIndexRepository {
 
     /** 删除某 Excel 文件的全部索引（不影响 progress.json 内的进度）。 */
     suspend fun removeExcelData(excelUriMd5: String)
+
+    /** 一次读取整个 excel_data_index.json，返回全部 Excel 文件的 progressKey 映射（key=excelUriMd5）。 */
+    suspend fun getAllEntries(): Map<String, List<String>>
 }

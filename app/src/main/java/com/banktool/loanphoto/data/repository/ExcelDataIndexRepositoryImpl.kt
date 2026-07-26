@@ -50,6 +50,13 @@ class ExcelDataIndexRepositoryImpl @Inject constructor(
             }
         }
 
+    override suspend fun getAllEntries(): Map<String, List<String>> =
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                load()
+            }
+        }
+
     override suspend fun addProgressKey(excelUriMd5: String, key: String) =
         withContext(Dispatchers.IO) {
             mutex.withLock {

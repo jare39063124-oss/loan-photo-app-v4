@@ -608,11 +608,11 @@ class CustomerListViewModel @Inject constructor(
             try {
                 val raw = recentFilesStorage.getRecentFiles()
                 val items = withContext(Dispatchers.IO) {
+                    // 一次读取整个 excel_data_index.json，避免每个最近文件重读+重解析
+                    val allEntries = excelDataIndexRepository.getAllEntries()
                     raw.map { file ->
                         val md5 = ProgressKeyUtil.excelUriMd5(file.uri)
-                        val keys = runCatching {
-                            excelDataIndexRepository.getProgressKeys(md5)
-                        }.getOrDefault(emptyList())
+                        val keys = allEntries[md5] ?: emptyList()
                         RecentFileItem(
                             uri = file.uri,
                             fileName = file.fileName,
@@ -639,8 +639,8 @@ class CustomerListViewModel @Inject constructor(
      * 精确计算各分类张数；旧数据（v4.0.0）无 photoTypes 时回退到 [PhotoRecord.types]
      * presence（每类计数为 1）。
      *
-     * 在 IO 线程上顺序执行，因 [ProgressRepository.getProgress] 内部已加 Mutex，
-     * 并发亦会被串行化。
+     * 一次调用 [ProgressRepository.getAllProgress] 读取全部记录到内存，
+     * 循环内仅做 O(1) Map 查找，避免每行重读+重解析整个 progress.json。
      */
     private data class PhotoStats(
         val counts: Map<String, Int>,
@@ -649,12 +649,12 @@ class CustomerListViewModel @Inject constructor(
 
     private suspend fun loadPhotoStats(rows: List<CustomerRow>): PhotoStats =
         withContext(Dispatchers.IO) {
+            // 一次读取全部进度记录，避免每行重读+重解析整个 progress.json（O(N×M) → O(N+M)）
+            val allProgress = progressRepository.getAllProgress()
             val counts = HashMap<String, Int>(rows.size)
             val typeCounts = HashMap<String, Map<PhotoType, Int>>(rows.size)
             for (row in rows) {
-                val record = runCatching {
-                    progressRepository.getProgress(row.progressKey)
-                }.getOrNull()
+                val record = allProgress[row.progressKey]
                 val photos = record?.photos ?: emptyList()
                 counts[row.progressKey] = photos.size
                 // 优先使用 photoTypes（精确张数），旧数据回退到 types presence（每类 1）

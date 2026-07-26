@@ -203,52 +203,72 @@ class WatermarkGenerator @Inject constructor() {
                 return@withContext null
             }
 
-            // 解码为 Bitmap（必须为 mutable config 才能画）
-            val opts = BitmapFactory.Options().apply {
-                inPreferredConfig = Bitmap.Config.ARGB_8888
+            // 目标最长边（HIGH=1920 / MEDIUM=1280 / LOW=640），后续降采样与精确缩放均以此为基准
+            val targetLongestEdge = photoQuality.maxEdge
+
+            // 1. 仅读取原图尺寸（inJustDecodeBounds 不分配像素内存），用于计算 inSampleSize
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(sourcePath, boundsOpts)
+            val srcWidth = boundsOpts.outWidth
+            val srcHeight = boundsOpts.outHeight
+            if (srcWidth <= 0 || srcHeight <= 0) {
+                Timber.w("WatermarkGenerator 读取原图尺寸失败: %s", sourcePath)
+                return@withContext null
             }
-            val srcBitmap = BitmapFactory.decodeFile(sourcePath, opts) ?: run {
+
+            // 2. 计算 inSampleSize（2 的幂次），使解码后最长边 >= targetLongestEdge（约目标的 1~2 倍）
+            val sampleSize = calculateInSampleSize(srcWidth, srcHeight, targetLongestEdge)
+
+            // 3. 降采样解码：相比全分辨率（可能 48MP）大幅减少像素量，是性能优化的核心步骤
+            val decodeOpts = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+                inSampleSize = sampleSize
+            }
+            val decodedBitmap = BitmapFactory.decodeFile(sourcePath, decodeOpts) ?: run {
                 Timber.w("WatermarkGenerator 解码失败: %s", sourcePath)
                 return@withContext null
             }
 
-            // 按源文件 EXIF 方向旋转到观看方向，确保水印正向绘制
+            // 4. 按源文件 EXIF 方向旋转（烘焙进像素），确保水印正向绘制；EXIF 从源文件读取以保留原方向信息
             val orientation = runCatching {
                 ExifInterface(sourcePath).getAttributeInt(
                     ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL,
                 )
             }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
-            Timber.d("WatermarkGen EXIF orientation=%d srcBitmap=%dx%d sourcePath=%s",
-                orientation, srcBitmap.width, srcBitmap.height, sourcePath)
-            val oriented = rotateBitmapByExif(srcBitmap, orientation)
+            Timber.d("WatermarkGen EXIF orientation=%d decoded=%dx%d sampleSize=%d sourcePath=%s",
+                orientation, decodedBitmap.width, decodedBitmap.height, sampleSize, sourcePath)
+            val oriented = rotateBitmapByExif(decodedBitmap, orientation)
             Timber.d("WatermarkGen after rotate oriented=%dx%d (rotated=%s)",
-                oriented.width, oriented.height, oriented !== srcBitmap)
+                oriented.width, oriented.height, oriented !== decodedBitmap)
 
-            val resultBitmap = if (config.enabled) {
+            // 5. 精确缩放到目标尺寸（不放大）：旋转后宽高可能互换，故以 oriented 实际宽高计算
+            //    在已降采样的位图上缩放，远比在全分辨率位图上缩放省时省内存
+            val longestEdge = maxOf(oriented.width, oriented.height)
+            val scaledBitmap = if (longestEdge > targetLongestEdge) {
+                val scale = targetLongestEdge.toFloat() / longestEdge
+                Bitmap.createScaledBitmap(
+                    oriented,
+                    (oriented.width * scale).toInt(),
+                    (oriented.height * scale).toInt(),
+                    true,
+                )
+            } else {
+                oriented
+            }
+
+            // 6. 在已缩放位图上绘制水印：drawWatermark 基于 bitmap.width 自适应字号/位置，
+            //    故在 1920px 上绘制的视觉效果与「全分辨率绘制再缩到 1920px」一致或更优，
+            //    且 maxBlockWidthRatio（25%/20%/15%）按已缩放宽度生效，行为与 v4.1.4 保持一致
+            val finalBitmap = if (config.enabled) {
                 drawWatermark(
-                    bitmap = oriented,
+                    bitmap = scaledBitmap,
                     segments = config.segments,
                     position = config.position,
                     fontSize = config.fontSize,
                     opacity = config.opacity,
                 )
             } else {
-                oriented
-            }
-
-            // 按照片质量等比缩放（不放大）：最长边超过 maxEdge 时缩小
-            val maxEdge = photoQuality.maxEdge
-            val longestEdge = maxOf(resultBitmap.width, resultBitmap.height)
-            val finalBitmap = if (longestEdge > maxEdge) {
-                val scale = maxEdge.toFloat() / longestEdge
-                Bitmap.createScaledBitmap(
-                    resultBitmap,
-                    (resultBitmap.width * scale).toInt(),
-                    (resultBitmap.height * scale).toInt(),
-                    true,
-                )
-            } else {
-                resultBitmap
+                scaledBitmap
             }
             Timber.d("WatermarkGen final=%dx%d (landscape=%s) -> %s",
                 finalBitmap.width, finalBitmap.height,
@@ -261,11 +281,12 @@ class WatermarkGenerator @Inject constructor() {
                 finalBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, fos)
                 fos.flush()
             }
-            // 回收位图链：srcBitmap → oriented → resultBitmap → finalBitmap
+            // 回收中间位图链：decodedBitmap → oriented → scaledBitmap → finalBitmap
             // 每个对象仅回收一次（链中相同时跳过，避免 double-recycle / 内存泄漏）
-            if (oriented !== srcBitmap) srcBitmap.recycle()
-            if (resultBitmap !== oriented) oriented.recycle()
-            if (finalBitmap !== resultBitmap) resultBitmap.recycle()
+            // drawWatermark 内部 copy 出新位图，故 finalBitmap 通常 != scaledBitmap，scaledBitmap 仍需回收
+            if (oriented !== decodedBitmap) decodedBitmap.recycle()
+            if (scaledBitmap !== oriented) oriented.recycle()
+            if (finalBitmap !== scaledBitmap) scaledBitmap.recycle()
             finalBitmap.recycle()
 
             // 写入 GPS EXIF（保留原 EXIF + 追加 GPS；location=null 时跳过 GPS）
@@ -356,6 +377,26 @@ class WatermarkGenerator @Inject constructor() {
             else -> return bitmap
         }
         return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    }
+
+    /**
+     * 根据目标最长边计算 BitmapFactory 的 inSampleSize（2 的幂次）。
+     * 使解码后的图片最长边 >= targetLongestEdge，再由 createScaledBitmap 精确缩放。
+     *
+     * 采用标准 Android 降采样模式：每次翻倍前先判断「再翻倍是否仍不小于目标」，
+     * 保证解码后的最长边 >= [targetLongestEdge]（约为目标的 1~2 倍），既避免全分辨率解码，
+     * 又为 [Bitmap.createScaledBitmap] 留出向下精确缩放的空间，不损失目标分辨率。
+     */
+    private fun calculateInSampleSize(srcWidth: Int, srcHeight: Int, targetLongestEdge: Int): Int {
+        if (targetLongestEdge <= 0) return 1
+        val longestEdge = maxOf(srcWidth, srcHeight)
+        if (longestEdge <= targetLongestEdge) return 1
+        var sampleSize = 1
+        // 再翻倍后仍 >= 目标才继续，确保退出时 longestEdge/sampleSize >= targetLongestEdge
+        while (longestEdge / (sampleSize * 2) >= targetLongestEdge) {
+            sampleSize *= 2
+        }
+        return sampleSize
     }
 
     /**
