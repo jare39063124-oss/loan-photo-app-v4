@@ -20,7 +20,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -61,6 +63,7 @@ import com.banktool.loanphoto.data.camera.WatermarkPosition
 import com.banktool.loanphoto.data.license.LicenseChecker
 import com.banktool.loanphoto.data.naming.NameSegment
 import com.banktool.loanphoto.domain.entity.PhotoTypeConfig
+import com.banktool.loanphoto.ui.customer.shareExportedFile
 import com.banktool.loanphoto.ui.theme.Accent
 import com.banktool.loanphoto.ui.theme.Bg
 import com.banktool.loanphoto.ui.theme.Card as CardColor
@@ -97,12 +100,16 @@ fun SettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showClearCacheDialog by remember { mutableStateOf(false) }
+    var showLogDialog by remember { mutableStateOf(false) }
+    var logContent by remember { mutableStateOf("") }
 
     val namingConfig by viewModel.namingConfig.collectAsStateWithLifecycle()
     val watermarkConfig by viewModel.watermarkConfig.collectAsStateWithLifecycle()
     val photoQuality by viewModel.photoQuality.collectAsStateWithLifecycle()
     val guideLineConfig by viewModel.guideLineConfig.collectAsStateWithLifecycle()
     val photoTypeConfigs by viewModel.photoTypeConfigs.collectAsStateWithLifecycle()
+    val logEnabled by viewModel.logEnabled.collectAsStateWithLifecycle()
+    val logFileExists by viewModel.logFileExists.collectAsStateWithLifecycle()
 
     // 拍照类型编辑 / 新增 / 删除对话框状态
     var editingConfig by remember { mutableStateOf<PhotoTypeConfig?>(null) }
@@ -381,6 +388,76 @@ fun SettingsScreen(
                 )
             }
 
+            // 日志
+            SettingsCard(title = "日志") {
+                Text(
+                    text = "开启后所有运行日志与崩溃堆栈将写入 app.log，便于定位问题。",
+                    fontSize = 13.sp,
+                    color = TextSecondary,
+                )
+                Spacer(modifier = Modifier.size(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(text = "启用日志记录", fontSize = 14.sp, color = TextSecondary)
+                    Switch(checked = logEnabled, onCheckedChange = { viewModel.toggleLog(it) })
+                }
+                SettingsDivider()
+                Spacer(modifier = Modifier.size(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            logContent = viewModel.getLogTail()
+                            showLogDialog = true
+                        }
+                    },
+                    enabled = logFileExists,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Description,
+                        contentDescription = null,
+                        tint = Accent,
+                    )
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text(text = "查看日志", color = Accent)
+                }
+                Spacer(modifier = Modifier.size(8.dp))
+                OutlinedButton(
+                    onClick = { viewModel.getLogFile()?.let { shareExportedFile(context, it) } },
+                    enabled = logFileExists,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.IosShare,
+                        contentDescription = null,
+                        tint = Accent,
+                    )
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text(text = "分享日志", color = Accent)
+                }
+                Spacer(modifier = Modifier.size(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            viewModel.clearLogFile()
+                            Toast.makeText(context, "日志已清空", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.DeleteOutline,
+                        contentDescription = null,
+                        tint = Error,
+                    )
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text(text = "清空日志", color = Error)
+                }
+            }
+
             // 缓存
             SettingsCard(title = "缓存") {
                 Text(
@@ -435,6 +512,19 @@ fun SettingsScreen(
                 TextButton(onClick = { showClearCacheDialog = false }) {
                     Text("取消")
                 }
+            },
+        )
+    }
+
+    // 日志查看弹窗
+    if (showLogDialog) {
+        LogViewerDialog(
+            content = logContent,
+            onDismiss = { showLogDialog = false },
+            onCopyAll = {
+                val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText("log", logContent))
+                Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
             },
         )
     }

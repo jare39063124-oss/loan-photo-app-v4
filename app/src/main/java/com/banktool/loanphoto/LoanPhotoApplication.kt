@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.banktool.loanphoto.data.camera.CameraSessionRecovery
+import com.banktool.loanphoto.data.log.CrashLogger
+import com.banktool.loanphoto.data.log.FileLoggingTree
 import com.banktool.loanphoto.data.security.SecurityChecker
 import dagger.hilt.android.HiltAndroidApp
 import timber.log.Timber
@@ -49,6 +51,17 @@ class LoanPhotoApplication : Application(), Configuration.Provider {
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
         }
+
+        // 文件日志 + 崩溃捕获：按设置页「启用日志记录」开关装配
+        // 同步读 SharedPreferences（log_prefs/log_enabled），保证杀进程重启后崩溃捕获在 onCreate 即就绪
+        val logEnabled = getSharedPreferences("log_prefs", MODE_PRIVATE)
+            .getBoolean("log_enabled", false)
+        if (logEnabled) {
+            Timber.plant(FileLoggingTree(this))
+            CrashLogger.install(this)
+            Timber.i("File logging & crash handler installed (log_enabled=true)")
+        }
+
         Timber.i("LoanPhotoApplication onCreate, version=${BuildConfig.VERSION_NAME}")
 
         // 运行时抗逆向：启动时执行完整性校验（签名 / 调试器 / Frida）

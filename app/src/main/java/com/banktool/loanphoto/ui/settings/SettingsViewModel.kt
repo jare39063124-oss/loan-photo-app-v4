@@ -13,6 +13,8 @@ import com.banktool.loanphoto.data.camera.PhotoQuality
 import com.banktool.loanphoto.data.camera.WatermarkConfig
 import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkPosition
+import com.banktool.loanphoto.data.log.CrashLogger
+import com.banktool.loanphoto.data.log.FileLoggingTree
 import com.banktool.loanphoto.data.naming.NameSegment
 import com.banktool.loanphoto.data.naming.NamingConfig
 import com.banktool.loanphoto.data.naming.NamingConfigRepository
@@ -24,6 +26,7 @@ import com.banktool.loanphoto.domain.entity.PhotoTypeConfig
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -32,6 +35,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import timber.log.Timber
+import java.io.File
 import java.util.Calendar
 import javax.inject.Inject
 
@@ -113,6 +118,24 @@ class SettingsViewModel @Inject constructor(
         .map { prefs -> deserializeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS]) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, PhotoType.DEFAULT_CONFIGS)
 
+    /** logEnabled 的可变后备，供 [toggleLog] 内部更新。 */
+    private val _logEnabled = MutableStateFlow(
+        context.getSharedPreferences(logPrefsName, Context.MODE_PRIVATE)
+            .getBoolean(keyLogEnabled, false),
+    )
+
+    /** logFileExists 的可变后备，供 [refreshLogFileExists] 内部更新。 */
+    private val _logFileExists = MutableStateFlow(FileLoggingTree.logFile(context).exists())
+
+    /** 当前已 plant 的 [FileLoggingTree] 引用，便于关闭时 uproot。 */
+    private var fileLoggingTree: FileLoggingTree? = null
+
+    /** 日志诊断 - 是否启用文件日志（持久化到 SharedPreferences `log_prefs`）。 */
+    val logEnabled: StateFlow<Boolean> = _logEnabled
+
+    /** 日志诊断 - app.log 文件是否存在（开启日志并写入后会产生文件）。 */
+    val logFileExists: StateFlow<Boolean> = _logFileExists
+
     /**
      * 设置某一段命名配置并持久化。
      *
@@ -168,6 +191,61 @@ class SettingsViewModel @Inject constructor(
     /** 设置照片质量等级。 */
     fun setPhotoQuality(v: PhotoQuality) {
         viewModelScope.launch { watermarkConfigRepository.setPhotoQuality(v) }
+    }
+
+    /**
+     * 开启 / 关闭文件日志与崩溃捕获。
+     *
+     * - 写入 SharedPreferences `log_prefs` 持久化开关状态
+     * - 开启：plant [FileLoggingTree] 并安装 [CrashLogger]
+     * - 关闭：uproot 已 plant 的 Tree 并卸载 [CrashLogger]
+     * - 最后刷新 [logFileExists]
+     *
+     * @param enabled 是否启用日志
+     */
+    fun toggleLog(enabled: Boolean) {
+        context.getSharedPreferences(logPrefsName, Context.MODE_PRIVATE)
+            .edit().putBoolean(keyLogEnabled, enabled).apply()
+        _logEnabled.value = enabled
+        if (enabled) {
+            fileLoggingTree = FileLoggingTree(context).also { Timber.plant(it) }
+            CrashLogger.install(context)
+        } else {
+            fileLoggingTree?.let { Timber.uproot(it) }
+            fileLoggingTree = null
+            CrashLogger.uninstall()
+        }
+        refreshLogFileExists()
+    }
+
+    /** 返回日志文件（不存在返回 null）。 */
+    fun getLogFile(): File? = FileLoggingTree.logFile(context).takeIf { it.exists() }
+
+    /**
+     * 读取 app.log 末尾 [maxLines] 行（默认 500）。
+     *
+     * 在 IO 线程执行，避免阻塞主线程；文件不存在时返回空串。
+     * 注意 [File.readLines] 会全量读取，5MB 上限内可接受。
+     *
+     * @param maxLines 返回的最大行数
+     * @return 末尾行拼接的字符串（`\n` 分隔），文件不存在时为 ""
+     */
+    suspend fun getLogTail(maxLines: Int = 500): String = withContext(Dispatchers.IO) {
+        val file = FileLoggingTree.logFile(context)
+        if (!file.exists()) return@withContext ""
+        file.readLines().takeLast(maxLines).joinToString("\n")
+    }
+
+    /** 删除日志文件并刷新 [logFileExists]（在 IO 线程执行）。 */
+    suspend fun clearLogFile() = withContext(Dispatchers.IO) {
+        val file = FileLoggingTree.logFile(context)
+        if (file.exists()) file.delete()
+        refreshLogFileExists()
+    }
+
+    /** 刷新 [logFileExists] 状态（检查 app.log 是否存在）。 */
+    private fun refreshLogFileExists() {
+        _logFileExists.value = FileLoggingTree.logFile(context).exists()
     }
 
     /** 开启 / 关闭黄金分割线参考线。 */
@@ -289,6 +367,9 @@ class SettingsViewModel @Inject constructor(
     }.timeInMillis
 
     private companion object {
+        const val logPrefsName = "log_prefs"
+        const val keyLogEnabled = "log_enabled"
+
         val KEY_GOLDEN_RATIO_GRID = booleanPreferencesKey("golden_ratio_grid")
         val KEY_CENTER_MARK = booleanPreferencesKey("center_mark")
         val KEY_PHOTO_TYPE_CONFIGS = stringPreferencesKey("photo_type_configs")
