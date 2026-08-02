@@ -58,7 +58,7 @@ object NetworkModule {
                     .addHeader("Content-Type", "application/json")
                     // OpenRouter 推荐头：HTTP-Referer 用于应用识别，X-Title 在 OpenRouter 控制台展示
                     .addHeader("HTTP-Referer", HTTP_REFERER)
-                    .addHeader("X-Title", "资产盘点拍照")
+                    .addHeader("X-Title", "LoanPhotoApp")
                     .build()
                 chain.proceed(request)
             }
