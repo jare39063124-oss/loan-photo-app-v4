@@ -51,7 +51,7 @@ import javax.inject.Inject
  * 相机界面 UI 状态。
  */
 data class CameraUiState(
-    val currentPhotoType: PhotoType = PhotoType.DISTANT,
+    val currentPhotoType: String = PhotoType.DISTANT.displayName,
     val primaryRow: CustomerRow? = null,
     val multiSelectRows: List<CustomerRow> = emptyList(),
     val excelUri: String = "",
@@ -87,7 +87,8 @@ data class CameraUiState(
  *
  * 职责：
  * 1. 持有 [CameraEngine]（由 Hilt 在运行时按机型注入：HUAWEI/HONOR=Camera2CameraEngine，其余=CameraxCameraEngine）
- * 2. 维护当前 [PhotoType]、主 [CustomerRow]、多选 [CustomerRow] 列表
+ * 2. 维护当前拍照类型 displayName（[CameraUiState.currentPhotoType]，字符串，支持用户自定义类型）、
+ *    主 [CustomerRow]、多选 [CustomerRow] 列表
  * 3. 拍照触发：engine.captureToFile -> 落盘 -> 水印 -> 缩略图 -> markPhoto/markPhotoBatch
  * 4. 持久化 [CameraSession]（拍照前 save，完成或退出后 clear）
  * 5. 多选计数：主 key 走 [ProgressRepository.markPhoto]，其余走 [ProgressRepository.markPhotoBatch]
@@ -111,12 +112,6 @@ class CameraViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
-
-    /**
-     * 设备真实方向（0/90/180/270），由 [CameraEngine.deviceOrientationFlow] 提供，
-     * 供 UI 绘制水平仪参考线。直接转发引擎流，UI 用 collectAsStateWithLifecycle 订阅。
-     */
-    val deviceOrientation: StateFlow<Int> = cameraEngine.deviceOrientationFlow
 
     /** 主线程 Executor（拍照回调）。 */
     val mainExecutor: Executor by lazy { ContextCompat.getMainExecutor(app) }
@@ -179,9 +174,9 @@ class CameraViewModel @Inject constructor(
         saveCameraSession(launched = true, photoPath = null, mediaUri = null)
     }
 
-    /** 切换拍照类型。 */
-    fun onPhotoTypeChange(type: PhotoType) {
-        _uiState.update { it.copy(currentPhotoType = type) }
+    /** 切换拍照类型（接收 displayName 字符串，与自定义类型配置对齐）。 */
+    fun onPhotoTypeChange(displayName: String) {
+        _uiState.update { it.copy(currentPhotoType = displayName) }
     }
 
     /**
@@ -311,7 +306,7 @@ class CameraViewModel @Inject constructor(
                 namingRuleGenerator.generate(
                     config = config,
                     customerRow = primary,
-                    photoType = currentPhotoType,
+                    photoTypeDisplayName = currentPhotoType,
                     sequence = sequence,
                 )
             }
@@ -335,18 +330,18 @@ class CameraViewModel @Inject constructor(
 
     /**
      * 计算下一个序号：扫描 [photosDir] 下已存在的 .jpg 文件，
-     * 统计文件名中包含 `-${photoType.displayName}-` 的数量 + 1。
+     * 统计文件名中包含 `-${photoTypeDisplayName}-` 的数量 + 1。
      *
      * - 目录不存在或无匹配文件时返回 1
      * - 当 [NamingConfig.isAllNone] 时 NamingRuleGenerator 会回退 IMG_<timestamp>.jpg，
      *   此时序号不影响结果，但调用本方法无害
      */
-    private fun calculateNextSequence(photosDir: File, photoType: PhotoType): Int {
+    private fun calculateNextSequence(photosDir: File, photoTypeDisplayName: String): Int {
         if (!photosDir.exists()) return 1
         val existing = photosDir.listFiles { f -> f.isFile && f.name.endsWith(".jpg", ignoreCase = true) }
             ?: return 1
         val count = existing.count { f ->
-            f.name.contains("-${photoType.displayName}-", ignoreCase = true)
+            f.name.contains("-$photoTypeDisplayName-", ignoreCase = true)
         }
         return count + 1
     }
@@ -382,7 +377,7 @@ class CameraViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val primaryKey = primary.progressKey
-                val photoType = _uiState.value.currentPhotoType.displayName
+                val photoType = _uiState.value.currentPhotoType
 
                 // 1. 位置：三级回退
                 //   ① 实时定位（800ms 超时）
@@ -603,7 +598,7 @@ class CameraViewModel @Inject constructor(
             cameraLaunched = launched,
             requestCode = REQUEST_CODE_CAMERA,
             rowIndex = primary.rowIndex,
-            photoType = _uiState.value.currentPhotoType.displayName,
+            photoType = _uiState.value.currentPhotoType,
             multiSelectKeys = multiKeys,
             multiSelectRows = multiRows,
             key = primary.progressKey,

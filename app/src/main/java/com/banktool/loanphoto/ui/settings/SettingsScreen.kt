@@ -17,8 +17,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -29,6 +31,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -57,6 +60,7 @@ import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkPosition
 import com.banktool.loanphoto.data.license.LicenseChecker
 import com.banktool.loanphoto.data.naming.NameSegment
+import com.banktool.loanphoto.domain.entity.PhotoTypeConfig
 import com.banktool.loanphoto.ui.theme.Accent
 import com.banktool.loanphoto.ui.theme.Bg
 import com.banktool.loanphoto.ui.theme.Card as CardColor
@@ -75,7 +79,7 @@ import java.io.File
  *
  * 卡片内容：
  * - 关于：应用名「资产盘点拍照工具」+ 版本号（[BuildConfig.VERSION_NAME]）
- * - AI 模型：DeepSeek `deepseek-v4-flash`（[BuildConfig.DEEPSEEK_MODEL]）
+ * - AI 模型：OpenRouter `openrouter`（[BuildConfig.OPENROUTER_MODEL]）
  * - 照片命名规则：4 段下拉选择器 + 实时预览（持久化到 DataStore）
  * - 清空缓存：删除 `getExternalFilesDir/photos` 与 `reports` 目录（带确认对话框）
  *
@@ -98,6 +102,12 @@ fun SettingsScreen(
     val watermarkConfig by viewModel.watermarkConfig.collectAsStateWithLifecycle()
     val photoQuality by viewModel.photoQuality.collectAsStateWithLifecycle()
     val guideLineConfig by viewModel.guideLineConfig.collectAsStateWithLifecycle()
+    val photoTypeConfigs by viewModel.photoTypeConfigs.collectAsStateWithLifecycle()
+
+    // 拍照类型编辑 / 新增 / 删除对话框状态
+    var editingConfig by remember { mutableStateOf<PhotoTypeConfig?>(null) }
+    var showAddTypeDialog by remember { mutableStateOf(false) }
+    var deletingConfig by remember { mutableStateOf<PhotoTypeConfig?>(null) }
 
     // 设备识别码 / 设备信息（用于「关于」卡片展示，授权激活时需将识别码告知作者）
     val licenseChecker = remember { LicenseChecker() }
@@ -169,9 +179,9 @@ fun SettingsScreen(
 
             // AI 模型
             SettingsCard(title = "AI 模型") {
-                SettingsRow(label = "服务商", value = "DeepSeek")
+                SettingsRow(label = "服务商", value = "OpenRouter")
                 SettingsDivider()
-                SettingsRow(label = "模型", value = BuildConfig.DEEPSEEK_MODEL)
+                SettingsRow(label = "模型", value = BuildConfig.OPENROUTER_MODEL)
             }
 
             // 照片命名规则
@@ -320,10 +330,41 @@ fun SettingsScreen(
                 )
             }
 
+            // 拍照类型
+            SettingsCard(title = "拍照类型") {
+                Text(
+                    text = "编辑拍照类型名称，可新增或删除类型（至少保留 1 个）。类型名用作文件名与进度记录 key。",
+                    fontSize = 13.sp,
+                    color = TextSecondary,
+                )
+                Spacer(modifier = Modifier.size(12.dp))
+                photoTypeConfigs.forEachIndexed { index, config ->
+                    if (index > 0) SettingsDivider()
+                    PhotoTypeConfigRow(
+                        config = config,
+                        onEdit = { editingConfig = config },
+                        onDelete = { deletingConfig = config },
+                    )
+                }
+                Spacer(modifier = Modifier.size(8.dp))
+                OutlinedButton(
+                    onClick = { showAddTypeDialog = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = null,
+                        tint = Accent,
+                    )
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text(text = "添加类型", color = Accent)
+                }
+            }
+
             // 参考线
             SettingsCard(title = "参考线") {
                 Text(
-                    text = "相机取景界面叠加显示的参考线，辅助构图与水平校准。",
+                    text = "相机取景界面叠加显示的参考线，辅助构图。",
                     fontSize = 13.sp,
                     color = TextSecondary,
                 )
@@ -337,11 +378,6 @@ fun SettingsScreen(
                     label = "中心标",
                     checked = guideLineConfig.centerMark,
                     onCheckedChange = { viewModel.onCenterMarkChange(it) },
-                )
-                GuideLineToggle(
-                    label = "水平仪",
-                    checked = guideLineConfig.levelGauge,
-                    onCheckedChange = { viewModel.onLevelGaugeChange(it) },
                 )
             }
 
@@ -397,6 +433,96 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showClearCacheDialog = false }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+
+    // 编辑拍照类型名称对话框
+    editingConfig?.let { config ->
+        var editName by remember(config.id) { mutableStateOf(config.displayName) }
+        AlertDialog(
+            onDismissRequest = { editingConfig = null },
+            title = { Text("编辑类型") },
+            text = {
+                OutlinedTextField(
+                    value = editName,
+                    onValueChange = { editName = it },
+                    singleLine = true,
+                    label = { Text("类型名称") },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.onEditPhotoTypeName(config, editName)
+                        editingConfig = null
+                    },
+                ) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingConfig = null }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+
+    // 新增拍照类型对话框
+    if (showAddTypeDialog) {
+        var newName by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAddTypeDialog = false },
+            title = { Text("添加类型") },
+            text = {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    singleLine = true,
+                    label = { Text("类型名称") },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.onAddPhotoType(newName)
+                        showAddTypeDialog = false
+                    },
+                ) {
+                    Text("添加")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddTypeDialog = false }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+
+    // 删除拍照类型确认对话框
+    deletingConfig?.let { config ->
+        AlertDialog(
+            onDismissRequest = { deletingConfig = null },
+            title = { Text("删除类型") },
+            text = {
+                Text("确定删除「${config.displayName}」吗？已拍摄该类型的照片记录不受影响。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.onDeletePhotoType(config)
+                        deletingConfig = null
+                    },
+                ) {
+                    Text("删除", color = Error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingConfig = null }) {
                     Text("取消")
                 }
             },
@@ -608,6 +734,51 @@ private fun GuideLineToggle(
     ) {
         Text(text = label, fontSize = 14.sp, color = TextSecondary)
         Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/**
+ * 拍照类型配置行：左侧类型名 + 右侧编辑/删除图标按钮。
+ *
+ * @param config 当前类型配置
+ * @param onEdit 点击编辑图标
+ * @param onDelete 点击删除图标
+ */
+@Composable
+private fun PhotoTypeConfigRow(
+    config: PhotoTypeConfig,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = config.displayName,
+            fontSize = 14.sp,
+            color = TextColor,
+            fontWeight = FontWeight.Medium,
+        )
+        Row {
+            IconButton(onClick = onEdit) {
+                Icon(
+                    imageVector = Icons.Filled.Edit,
+                    contentDescription = "编辑类型",
+                    tint = Accent,
+                )
+            }
+            IconButton(onClick = onDelete) {
+                Icon(
+                    imageVector = Icons.Filled.DeleteOutline,
+                    contentDescription = "删除类型",
+                    tint = Error,
+                )
+            }
+        }
     }
 }
 

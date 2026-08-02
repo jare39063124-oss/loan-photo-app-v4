@@ -86,9 +86,9 @@ class ReportViewModel @Inject constructor(
      *
      * 流程：
      * 1. 先持久化特殊日志（与「保存」按钮一致，避免生成失败时丢失输入）
-     * 2. 收集已拍摄客户记录
+     * 2. 收集全量客户与已拍摄客户记录（全量清单传入 AI 上下文，已拍摄清单用于模板填充）
      * 3. 读取走访备注
-     * 4. 调用 AI 生成报表（携带 specialLog）
+     * 4. 调用 AI 生成报表（携带 specialLog 与全量客户清单）
      * 5. 校验 AI 是否参考了走访备注
      * 6. 填充模板，得到输出文件路径
      * 7. 将路径转为 [File]，记录 file + fileSize 到 Success 状态
@@ -116,14 +116,20 @@ class ReportViewModel @Inject constructor(
                     _specialLog.value = normalizedLog
                 }.onFailure { Timber.w(it, "生成前保存特殊日志失败") }
 
-                // 1. 收集已拍摄客户记录
+                // 1. 收集全量客户与已拍摄客户记录
                 val allProgress = progressRepository.getAllProgress()
                 val visitedRecords = mutableListOf<Pair<CustomerRow, PhotoRecord>>()
+                // 全量客户清单（含未拍摄），传入 AI 上下文以便区分已拍摄/未拍摄
+                val allRecords = mutableListOf<Pair<CustomerRow, PhotoRecord?>>()
 
                 for (customer in customers) {
                     val photoRecord = allProgress[customer.progressKey]
                     if (photoRecord != null && photoRecord.photos.isNotEmpty()) {
                         visitedRecords.add(customer to photoRecord)
+                        allRecords.add(customer to photoRecord)
+                    } else {
+                        // 未拍摄客户也纳入 AI 上下文（photoRecord 为 null 表示未拍摄）
+                        allRecords.add(customer to null)
                     }
                 }
 
@@ -132,7 +138,7 @@ class ReportViewModel @Inject constructor(
                     return@launch
                 }
 
-                _progressText.value = "共 ${visitedRecords.size} 个已拍摄客户，正在调用 AI..."
+                _progressText.value = "共 ${visitedRecords.size} 个已拍摄客户（全量 ${allRecords.size} 个），正在调用 AI..."
 
                 // 2. 获取 batch_marked
                 val batchMarkedKeys = progressRepository.getBatchMarkedKeys()
@@ -143,9 +149,10 @@ class ReportViewModel @Inject constructor(
                 // 3. 获取 visit_note
                 val visitNote = visitNoteRepository.getVisitNote(excelUriMd5)
 
-                // 4. 调用 AI 生成报表（携带 specialLog）
+                // 4. 调用 AI 生成报表（携带 specialLog，全量客户清单作为上下文）
                 _progressText.value = "AI 正在生成报告..."
                 val records = aiRepository.generateReport(
+                    allRecords = allRecords,
                     visitedRecords = visitedRecords,
                     batchMarkedCount = batchMarkedCount,
                     visitNote = visitNote,

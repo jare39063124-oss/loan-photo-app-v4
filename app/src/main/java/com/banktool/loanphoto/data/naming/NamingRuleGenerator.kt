@@ -1,7 +1,6 @@
 package com.banktool.loanphoto.data.naming
 
 import com.banktool.loanphoto.domain.entity.CustomerRow
-import com.banktool.loanphoto.domain.entity.PhotoType
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -12,7 +11,7 @@ import javax.inject.Singleton
  * 照片命名规则生成器。
  *
  * 根据 [NamingConfig] 将客户信息按段拼接为文件名，末尾固定追加
- * `${photoType.displayName}-${sequence:02d}.jpg`。
+ * `${photoTypeDisplayName}-${sequence:02d}.jpg`。
  *
  * 规则：
  * 1. 遍历 [NamingConfig.segments]，跳过 [NameSegment.NONE] 段；
@@ -37,7 +36,8 @@ class NamingRuleGenerator @Inject constructor() {
      *
      * @param config 命名规则配置（4 段）
      * @param customerRow 客户行数据
-     * @param photoType 拍照类型
+     * @param photoTypeDisplayName 拍照类型显示名（同时作为文件名片段与 progress.json key，
+     *        支持用户自定义类型）
      * @param sequence 序号（1-based，格式化为两位）
      * @param timestamp 时间戳（用于 DATE 段与回退名），默认当前时间
      * @return 符合命名规则的安全文件名
@@ -45,7 +45,7 @@ class NamingRuleGenerator @Inject constructor() {
     fun generate(
         config: NamingConfig,
         customerRow: CustomerRow,
-        photoType: PhotoType,
+        photoTypeDisplayName: String,
         sequence: Int,
         timestamp: Long = System.currentTimeMillis(),
     ): String {
@@ -62,7 +62,7 @@ class NamingRuleGenerator @Inject constructor() {
             // 全 NONE 或所有非 NONE 段数据为空 → 回退
             "IMG_${timestamp}.jpg"
         } else {
-            val suffix = "${photoType.displayName}-${String.format("%02d", sequence)}.jpg"
+            val suffix = "$photoTypeDisplayName-${String.format("%02d", sequence)}.jpg"
             parts.joinToString("-") + "-" + suffix
         }
 

@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.PhotoType
+import com.banktool.loanphoto.domain.entity.PhotoTypeConfig
 import com.banktool.loanphoto.ui.theme.Accent
 import com.banktool.loanphoto.ui.theme.Card as CardColor
 import com.banktool.loanphoto.ui.theme.HighlightBg
@@ -59,7 +60,8 @@ import com.banktool.loanphoto.ui.theme.Warning
  *
  * @param row 客户行数据
  * @param photoCount 该行已拍照片数
- * @param photoTypeCounts 各分类拍照计数（key=PhotoType, value=数量）
+ * @param photoTypeCounts 各分类拍照计数（key=displayName 字符串，value=数量）
+ * @param photoTypeConfigs 拍照类型配置列表（用于决定展示哪些分类 chip；默认 5 种内置类型）
  * @param isSelected 是否被选中
  * @param isBatchMarked 是否被标记为同类型代表性户型
  * @param onSelectionToggle 切换选中状态
@@ -73,7 +75,8 @@ import com.banktool.loanphoto.ui.theme.Warning
 fun CustomerRowItem(
     row: CustomerRow,
     photoCount: Int,
-    photoTypeCounts: Map<PhotoType, Int> = emptyMap(),
+    photoTypeCounts: Map<String, Int> = emptyMap(),
+    photoTypeConfigs: List<PhotoTypeConfig> = PhotoType.DEFAULT_CONFIGS,
     isSelected: Boolean,
     isBatchMarked: Boolean = false,
     onSelectionToggle: () -> Unit,
@@ -230,6 +233,7 @@ fun CustomerRowItem(
             PhotoTypeCountRow(
                 totalCount = photoCount,
                 typeCounts = photoTypeCounts,
+                configs = photoTypeConfigs,
                 modifier = Modifier.padding(start = 16.dp, end = 8.dp, bottom = 8.dp),
             )
         }
@@ -239,22 +243,25 @@ fun CustomerRowItem(
 /**
  * 全量分类计数展示（[FlowRow]）。
  *
- * v4.0.2：始终遍历 [PhotoType.entries] 展示全部 5 个分类 + 「总计」前缀。
+ * 遍历 [configs] 展示各分类 chip + 「总计」前缀。计数匹配基于 [PhotoTypeConfig.displayName]
+ * （与 progress.json 中 types Map 的 key 对齐）。
  * 格式示例：「总计 N  远景0 近景2 内部1 瑕疵0 其他0」
  *
  * - 总计：[Accent] 背景 + [TextOnLight] 文字（强调）
  * - count>0 分类：[HighlightBg] 背景 + [Accent] 文字
  * - count=0 分类：透明背景 + [TextSecondary] 文字（弱化）
  *
- * @param typeCounts 各分类计数
+ * @param typeCounts 各分类计数（key=displayName 字符串）
  * @param totalCount 总照片数（用于「总计」chip）
+ * @param configs 拍照类型配置列表（决定展示哪些分类 chip）
  * @param modifier 外部传入的修饰符（用于控制对齐与 padding）
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PhotoTypeCountRow(
-    typeCounts: Map<PhotoType, Int>,
+    typeCounts: Map<String, Int>,
     totalCount: Int,
+    configs: List<PhotoTypeConfig>,
     modifier: Modifier = Modifier,
 ) {
     FlowRow(
@@ -264,10 +271,10 @@ private fun PhotoTypeCountRow(
     ) {
         // 总计 chip（Accent 强调）
         TotalCountChip(total = totalCount)
-        // 全量分类 chip
-        PhotoType.entries.forEach { type ->
-            val count = typeCounts[type] ?: 0
-            PhotoTypeCountChip(type = type, count = count)
+        // 各分类 chip（按用户配置遍历）
+        configs.forEach { config ->
+            val count = typeCounts[config.displayName] ?: 0
+            PhotoTypeCountChip(displayName = config.displayName, count = count)
         }
     }
 }
@@ -295,13 +302,13 @@ private fun TotalCountChip(total: Int) {
 /**
  * 单个分类计数 Chip。
  *
- * 格式始终为「{type.displayName}{count}」（如「远景0」「近景2」）。
+ * 格式始终为「{displayName}{count}」（如「远景0」「近景2」）。
  * - count=0：[TextSecondary] 文字 + 透明背景（弱化但可见）
  * - count>0：[Accent] 文字 + [HighlightBg] 背景（强调）
  */
 @Composable
-private fun PhotoTypeCountChip(type: PhotoType, count: Int) {
-    val text = "${type.displayName}$count"
+private fun PhotoTypeCountChip(displayName: String, count: Int) {
+    val text = "$displayName$count"
     val bgColor = if (count > 0) HighlightBg else Color.Transparent
     val textColor = if (count > 0) Accent else TextSecondary
     Box(

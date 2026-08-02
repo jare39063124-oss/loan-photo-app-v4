@@ -31,6 +31,9 @@ visit_note（走访备注）最高优先级，必须逐字逐句参考；remark�
 【多房间号合并】
 同一地址 4 个以上房间号合并描述（如「101、102、201、202室均为相同户型」）。
 
+【输入说明】
+以下为全量客户清单。请仅为已拍摄照片的客户生成日报条目，未拍摄的客户不需要生成。
+
 【禁止事项】
 - 严禁使用「等」字概括，必须逐一列出
 - 严禁编造照片中不存在的信息
@@ -48,12 +51,18 @@ visit_note（走访备注）最高优先级，必须逐字逐句参考；remark�
 
     /**
      * 构建用户 prompt
-     * @param visitedRecords 已拍摄客户列表（photoCount > 0）
+     *
+     * 全量客户清单传入 AI 上下文：已拍摄客户标注 `[已拍摄]` 并附带照片/备注详情，
+     * 未拍摄客户仅标注 `[未拍摄]` 并给出基础信息，AI 仅应为已拍摄客户生成日报条目。
+     *
+     * @param allRecords 全量客户列表（photoRecord 为 null 表示未拍摄）
+     * @param visitedRecords 已拍摄客户列表（photoCount > 0），用于统计与详情展示
      * @param batchMarkedCount 同类型代表性户型标记数
      * @param visitNote 走访备注内容
      * @param specialLog AI 生成页面用户填写的额外补充说明（special_log）
      */
     fun buildUserPrompt(
+        allRecords: List<Pair<CustomerRow, PhotoRecord?>>,
         visitedRecords: List<Pair<CustomerRow, PhotoRecord>>,
         batchMarkedCount: Int,
         visitNote: String?,
@@ -61,15 +70,15 @@ visit_note（走访备注）最高优先级，必须逐字逐句参考；remark�
     ): String {
         val sb = StringBuilder()
 
-        sb.appendLine("请根据以下拍摄记录生成现场勘查日报表。")
+        sb.appendLine("请根据以下客户清单生成现场勘查日报表（仅为标注[已拍摄]的客户生成，[未拍摄]客户不需要生成）。")
         sb.appendLine()
 
-        sb.appendLine("【拍摄记录】")
-        sb.appendLine("已拍摄客户共 ${visitedRecords.size} 个，其中同类型代表性户型标记 ${batchMarkedCount} 户。")
+        sb.appendLine("【客户清单】")
+        sb.appendLine("全量客户共 ${allRecords.size} 个，其中已拍摄 ${visitedRecords.size} 个，同类型代表性户型标记 ${batchMarkedCount} 户。")
         sb.appendLine()
 
-        // 按 borrower 分组（同客户多抵押物合并）
-        val groupedByBorrower = visitedRecords.groupBy { it.first.borrower }
+        // 按 borrower 分组（同客户多抵押物合并）；使用全量客户，未拍摄客户也纳入上下文
+        val groupedByBorrower = allRecords.groupBy { it.first.borrower }
         sb.appendLine("【客户详情】")
         // 客户数据无独立面积字段：面积信息可能存在于 remark 原文或 visit_note 中，
         // 提示 AI 如遇面积信息须一并写入 collateral_info
@@ -77,17 +86,21 @@ visit_note（走访备注）最高优先级，必须逐字逐句参考；remark�
         for ((borrower, records) in groupedByBorrower) {
             sb.appendLine("客户：$borrower")
             for ((row, photoRecord) in records) {
-                sb.appendLine("  地址：${row.addrGeneral} ${row.addrDetail}")
+                // 标注是否已拍摄，让 AI 区分：仅 [已拍摄] 客户生成日报条目
+                val visited = photoRecord != null && photoRecord.photos.isNotEmpty()
+                sb.appendLine("  ${if (visited) "[已拍摄]" else "[未拍摄]"} 地址：${row.addrGeneral} ${row.addrDetail}")
                 sb.appendLine("  性质：${row.propertyType}")
-                sb.appendLine("  照片数：${photoRecord.photos.size}")
-                sb.appendLine("  照片类型：${photoRecord.types.joinToString("、")}")
-                // Excel 原始备注(remark)原文：field_description 须逐条参考，必须输出
-                if (row.remark.isNotEmpty()) {
-                    sb.appendLine("  备注(remark原文)：${row.remark}")
-                }
-                // App 内编辑的行级备注（progress.json _row_remarks），与 Excel 原文可能不同
-                if (photoRecord.remark.isNotEmpty() && photoRecord.remark != row.remark) {
-                    sb.appendLine("  备注(走访编辑)：${photoRecord.remark}")
+                if (photoRecord != null && visited) {
+                    sb.appendLine("  照片数：${photoRecord.photos.size}")
+                    sb.appendLine("  照片类型：${photoRecord.types.joinToString("、")}")
+                    // Excel 原始备注(remark)原文：field_description 须逐条参考，必须输出
+                    if (row.remark.isNotEmpty()) {
+                        sb.appendLine("  备注(remark原文)：${row.remark}")
+                    }
+                    // App 内编辑的行级备注（progress.json _row_remarks），与 Excel 原文可能不同
+                    if (photoRecord.remark.isNotEmpty() && photoRecord.remark != row.remark) {
+                        sb.appendLine("  备注(走访编辑)：${photoRecord.remark}")
+                    }
                 }
             }
             sb.appendLine()
@@ -107,22 +120,26 @@ visit_note（走访备注）最高优先级，必须逐字逐句参考；remark�
             sb.appendLine()
         }
 
-        sb.appendLine("请生成纯 JSON 数组格式的日报表，每个客户1条记录。")
+        sb.appendLine("请生成纯 JSON 数组格式的日报表，每个已拍摄客户1条记录，未拍摄客户不要生成。")
 
         return sb.toString()
     }
 
     /**
      * 构建 ChatRequest
+     *
+     * @param allRecords 全量客户列表（含未拍摄），传入 AI 上下文
+     * @param visitedRecords 已拍摄客户列表，用于统计与详情
      */
     fun buildChatRequest(
+        allRecords: List<Pair<CustomerRow, PhotoRecord?>>,
         visitedRecords: List<Pair<CustomerRow, PhotoRecord>>,
         batchMarkedCount: Int,
         visitNote: String?,
         specialLog: String? = null,
-        model: String = "deepseek-chat"
+        model: String = "nvidia/nemotron-3-ultra-550b-a55b:free"
     ): ChatRequest {
-        val userPrompt = buildUserPrompt(visitedRecords, batchMarkedCount, visitNote, specialLog)
+        val userPrompt = buildUserPrompt(allRecords, visitedRecords, batchMarkedCount, visitNote, specialLog)
 
         return ChatRequest(
             model = model,
@@ -131,7 +148,8 @@ visit_note（走访备注）最高优先级，必须逐字逐句参考；remark�
                 ChatMessage(role = "user", content = userPrompt)
             ),
             temperature = 0.3,
-            maxTokens = 4096,
+            // 提升 maxTokens 至 16384，避免长客户列表导致 JSON 响应被截断（finishReason=length）
+            maxTokens = 16384,
             stream = false
         )
     }

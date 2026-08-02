@@ -491,7 +491,8 @@ fun CustomerListScreen(
                                     CustomerRowItem(
                                         row = row,
                                         photoCount = uiState.photoCounts[row.progressKey] ?: 0,
-                                        photoTypeCounts = uiState.photoTypeCounts[row.progressKey] ?: emptyMap(),
+                                        photoTypeCounts = (uiState.photoTypeCounts[row.progressKey] ?: emptyMap())
+                                            .mapKeys { it.key.displayName },
                                         isSelected = row.rowIndex in uiState.selectedRows,
                                         isBatchMarked = row.progressKey in uiState.batchMarkedKeys,
                                         onSelectionToggle = { viewModel.toggleRowSelection(row.rowIndex) },

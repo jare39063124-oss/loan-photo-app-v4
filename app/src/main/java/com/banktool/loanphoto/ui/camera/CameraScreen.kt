@@ -49,7 +49,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -58,7 +57,7 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.banktool.loanphoto.domain.entity.CustomerRow
-import com.banktool.loanphoto.domain.entity.PhotoType
+import com.banktool.loanphoto.domain.entity.PhotoTypeConfig
 import com.banktool.loanphoto.ui.settings.SettingsViewModel
 import com.banktool.loanphoto.ui.theme.Accent
 import com.banktool.loanphoto.ui.theme.AccentDark
@@ -87,10 +86,10 @@ fun CameraScreen(
     settingsViewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    // 参考线配置（黄金分割线 / 中心标 / 水平仪），由 SettingsViewModel 持久化提供
+    // 参考线配置（黄金分割线 / 中心标），由 SettingsViewModel 持久化提供
     val guideLineConfig by settingsViewModel.guideLineConfig.collectAsStateWithLifecycle()
-    // 设备真实方向（0/90/180/270），用于水平仪绘制
-    val deviceOrientation by viewModel.deviceOrientation.collectAsStateWithLifecycle()
+    // 拍照类型配置（用户可自定义名称/数量），由 SettingsViewModel 持久化提供
+    val photoTypeConfigs by settingsViewModel.photoTypeConfigs.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -162,18 +161,17 @@ fun CameraScreen(
                 modifier = Modifier.fillMaxSize(),
             )
 
-            // 参考线叠加层（黄金分割线 / 中心标 / 水平仪），绘制于预览之上、交互控件之下
+            // 参考线叠加层（黄金分割线 / 中心标），绘制于预览之上、交互控件之下
             CameraGuideLines(
                 goldenRatioGrid = guideLineConfig.goldenRatioGrid,
                 centerMark = guideLineConfig.centerMark,
-                levelGauge = guideLineConfig.levelGauge,
-                deviceOrientation = deviceOrientation,
                 modifier = Modifier.fillMaxSize(),
             )
 
             // 顶部: PhotoType Chips
             PhotoTypeSelector(
                 current = uiState.currentPhotoType,
+                configs = photoTypeConfigs,
                 onSelect = viewModel::onPhotoTypeChange,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -266,11 +264,19 @@ fun CameraScreen(
 
 /**
  * 顶部拍照类型选择条。
+ *
+ * 遍历用户自定义的 [configs] 而非固定枚举，支持设置页新增/删除/重命名类型。
+ * 选中判断与回调均基于 [PhotoTypeConfig.displayName]（与文件名、progress.json key 对齐）。
+ *
+ * @param current 当前选中的类型 displayName
+ * @param configs 可配置的拍照类型列表（由 SettingsViewModel 持久化提供）
+ * @param onSelect 选中回调，传回 displayName
  */
 @Composable
 private fun PhotoTypeSelector(
-    current: PhotoType,
-    onSelect: (PhotoType) -> Unit,
+    current: String,
+    configs: List<PhotoTypeConfig>,
+    onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -282,16 +288,17 @@ private fun PhotoTypeSelector(
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            items(PhotoType.entries) { type ->
+            items(configs) { config ->
+                val isSelected = config.displayName == current
                 FilterChip(
-                    selected = type == current,
-                    onClick = { onSelect(type) },
+                    selected = isSelected,
+                    onClick = { onSelect(config.displayName) },
                     label = {
                         Text(
-                            text = type.displayName,
+                            text = config.displayName,
                             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                             fontSize = 16.sp,
-                            fontWeight = if (type == current) FontWeight.Bold else FontWeight.Normal,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                         )
                     },
                     colors = FilterChipDefaults.filterChipColors(
@@ -663,25 +670,20 @@ private fun CapturingOverlay() {
 /**
  * 相机参考线叠加层。
  *
- * 在相机预览之上绘制三种参考线（均由用户设置开关控制）：
+ * 在相机预览之上绘制两种参考线（均由用户设置开关控制）：
  * 1. [goldenRatioGrid]：黄金分割线（水平 1/3、2/3 + 垂直 1/3、2/3 十字网格，半透明白色）
  * 2. [centerMark]：画面中心短十字标（半透明白色，较网格略亮）
- * 3. [levelGauge]：顶部水平仪（竖直持机时绿色高亮，倾斜时白色旋转显示）
  *
  * 所有线条使用半透明白色，不遮挡预览内容。Canvas 不拦截触摸事件。
  *
  * @param goldenRatioGrid 是否绘制黄金分割线
  * @param centerMark 是否绘制中心标
- * @param levelGauge 是否绘制水平仪
- * @param deviceOrientation 设备真实方向（0/90/180/270）
  * @param modifier 修饰符
  */
 @Composable
 private fun CameraGuideLines(
     goldenRatioGrid: Boolean,
     centerMark: Boolean,
-    levelGauge: Boolean,
-    deviceOrientation: Int,
     modifier: Modifier = Modifier,
 ) {
     Canvas(modifier = modifier.fillMaxSize()) {
@@ -742,28 +744,6 @@ private fun CameraGuideLines(
                 end = Offset(cx, cy + halfLen),
                 strokeWidth = markStrokeWidth,
             )
-        }
-
-        // ===== 水平仪 =====
-        // 顶部中央水平条（长约 80dp、宽约 2dp）：
-        // - deviceOrientation=0（竖直持机）：水平显示 + 绿色高亮（已水平）
-        // - 其余方向：按 deviceOrientation 角度旋转 + 白色半透明（非水平）
-        if (levelGauge) {
-            val barLen = 80.dp.toPx()
-            val barStrokeWidth = 2.dp.toPx()
-            val cx = size.width / 2f
-            val y = 30.dp.toPx()
-            val isLevel = deviceOrientation == 0
-            val barColor = if (isLevel) Color(0xFF4CAF50) else Color.White.copy(alpha = 0.4f)
-            val angleDeg = deviceOrientation.toFloat()
-            rotate(degrees = angleDeg, pivot = Offset(cx, y)) {
-                drawLine(
-                    color = barColor,
-                    start = Offset(cx - barLen / 2f, y),
-                    end = Offset(cx + barLen / 2f, y),
-                    strokeWidth = barStrokeWidth,
-                )
-            }
         }
     }
 }

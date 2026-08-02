@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -19,6 +20,7 @@ import com.banktool.loanphoto.data.naming.NamingRuleGenerator
 import com.banktool.loanphoto.data.watermark.WatermarkConfigRepository
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.PhotoType
+import com.banktool.loanphoto.domain.entity.PhotoTypeConfig
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +30,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Calendar
 import javax.inject.Inject
 
@@ -36,19 +40,22 @@ import javax.inject.Inject
  *
  * - [goldenRatioGrid]：黄金分割线（默认开启）
  * - [centerMark]：中心标（默认开启）
- * - [levelGauge]：水平仪（默认开启）
  *
  * 持久化到独立 DataStore（`camera_guide.preferences_pb`），与水印 / 命名配置互不影响。
  */
 data class GuideLineConfig(
     val goldenRatioGrid: Boolean = true,
     val centerMark: Boolean = true,
-    val levelGauge: Boolean = true,
 )
 
 /** 参考线配置 DataStore（独立于 watermark / naming，避免修改既有仓库）。 */
 private val Context.guideLineDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "camera_guide",
+)
+
+/** 拍照类型配置 DataStore（独立持久化，清空缓存时不会被清除，保留用户自定义类型）。 */
+private val Context.photoTypeDataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "photo_type_configs",
 )
 
 /**
@@ -63,10 +70,13 @@ private val Context.guideLineDataStore: DataStore<Preferences> by preferencesDat
  *    [setWatermarkPosition] / [setWatermarkOpacity] /
  *    [setShowDate] / [setShowSerial] / [setShowAddress] / [setShowLatlng]
  * 6. 暴露相机参考线配置 [guideLineConfig]（DataStore 持久化，实时响应）
- * 7. 提供参考线开关入口 [onGoldenRatioGridChange] / [onCenterMarkChange] / [onLevelGaugeChange]
+ * 7. 提供参考线开关入口 [onGoldenRatioGridChange] / [onCenterMarkChange]
+ * 8. 暴露拍照类型配置 [photoTypeConfigs]（DataStore 持久化，实时响应，默认 5 种内置类型）
+ * 9. 提供拍照类型管理入口 [onEditPhotoTypeName] / [onAddPhotoType] / [onDeletePhotoType]
  *
  * 注入 [NamingConfigRepository]、[NamingRuleGenerator] 与 [WatermarkConfigRepository]（均 @Singleton）。
  * 参考线配置直接通过应用级 [Context] 持久化到独立 DataStore（`camera_guide`）。
+ * 拍照类型配置持久化到独立 DataStore（`photo_type_configs`），用 org.json 序列化为 JSON 字符串。
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -88,16 +98,20 @@ class SettingsViewModel @Inject constructor(
     val photoQuality: StateFlow<PhotoQuality> = watermarkConfigRepository.getPhotoQuality()
         .stateIn(viewModelScope, SharingStarted.Eagerly, PhotoQuality.HIGH)
 
-    /** 相机参考线配置（初始值三项全开，订阅 DataStore 后立即更新为持久化值）。 */
+    /** 相机参考线配置（初始值两项全开，订阅 DataStore 后立即更新为持久化值）。 */
     val guideLineConfig: StateFlow<GuideLineConfig> = context.guideLineDataStore.data
         .map { prefs ->
             GuideLineConfig(
                 goldenRatioGrid = prefs[KEY_GOLDEN_RATIO_GRID] ?: true,
                 centerMark = prefs[KEY_CENTER_MARK] ?: true,
-                levelGauge = prefs[KEY_LEVEL_GAUGE] ?: true,
             )
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, GuideLineConfig())
+
+    /** 拍照类型配置（初始值 5 种内置类型，订阅 DataStore 后立即更新为持久化值）。 */
+    val photoTypeConfigs: StateFlow<List<PhotoTypeConfig>> = context.photoTypeDataStore.data
+        .map { prefs -> deserializeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS]) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, PhotoType.DEFAULT_CONFIGS)
 
     /**
      * 设置某一段命名配置并持久化。
@@ -174,11 +188,67 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /** 开启 / 关闭水平仪参考线。 */
-    fun onLevelGaugeChange(v: Boolean) {
+    /**
+     * 修改某个拍照类型的显示名（id 不变，保持配置稳定性）。
+     *
+     * 空白名会被忽略。新名会同时作为后续文件名片段与 progress.json key 使用；
+     * 旧 progress.json 中已存的旧 displayName 记录不受影响（仍可被读取，只是不再匹配新名称）。
+     */
+    fun onEditPhotoTypeName(config: PhotoTypeConfig, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                context.guideLineDataStore.edit { prefs -> prefs[KEY_LEVEL_GAUGE] = v }
+                context.photoTypeDataStore.edit { prefs ->
+                    val current = deserializeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS])
+                    val updated = current.map {
+                        if (it.id == config.id) it.copy(displayName = trimmed) else it
+                    }
+                    prefs[KEY_PHOTO_TYPE_CONFIGS] = serializeConfigs(updated)
+                }
+            }
+        }
+    }
+
+    /**
+     * 新增一个拍照类型。
+     *
+     * 空白名会被忽略。id 使用 `"custom_${System.currentTimeMillis()}"` 保证唯一与稳定，
+     * 便于后续编辑/删除定位。
+     */
+    fun onAddPhotoType(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                context.photoTypeDataStore.edit { prefs ->
+                    val current = deserializeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS])
+                    val newConfig = PhotoTypeConfig(
+                        id = "custom_${System.currentTimeMillis()}",
+                        displayName = trimmed,
+                    )
+                    prefs[KEY_PHOTO_TYPE_CONFIGS] = serializeConfigs(current + newConfig)
+                }
+            }
+        }
+    }
+
+    /**
+     * 删除一个拍照类型。
+     *
+     * 至少保留 1 个类型（删除后若列表为空则忽略本次操作）。已拍摄该类型的照片记录不受影响，
+     * 仍保留在 progress.json 中。
+     */
+    fun onDeletePhotoType(config: PhotoTypeConfig) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                context.photoTypeDataStore.edit { prefs ->
+                    val current = deserializeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS])
+                    if (current.size <= 1) return@edit
+                    prefs[KEY_PHOTO_TYPE_CONFIGS] = serializeConfigs(
+                        current.filterNot { it.id == config.id },
+                    )
+                }
             }
         }
     }
@@ -204,7 +274,7 @@ class SettingsViewModel @Inject constructor(
         return namingRuleGenerator.generate(
             config = config,
             customerRow = mockCustomer,
-            photoType = PhotoType.DISTANT,
+            photoTypeDisplayName = PhotoType.DISTANT.displayName,
             sequence = 1,
             timestamp = todayNoonTimestamp(),
         )
@@ -221,6 +291,42 @@ class SettingsViewModel @Inject constructor(
     private companion object {
         val KEY_GOLDEN_RATIO_GRID = booleanPreferencesKey("golden_ratio_grid")
         val KEY_CENTER_MARK = booleanPreferencesKey("center_mark")
-        val KEY_LEVEL_GAUGE = booleanPreferencesKey("level_gauge")
+        val KEY_PHOTO_TYPE_CONFIGS = stringPreferencesKey("photo_type_configs")
+
+        /** 将配置列表序列化为 JSON 字符串（`[{"id":..,"displayName":..},...]`）。 */
+        fun serializeConfigs(configs: List<PhotoTypeConfig>): String {
+            val arr = JSONArray()
+            for (c in configs) {
+                val obj = JSONObject()
+                obj.put("id", c.id)
+                obj.put("displayName", c.displayName)
+                arr.put(obj)
+            }
+            return arr.toString()
+        }
+
+        /**
+         * 反序列化 JSON 字符串为配置列表。
+         *
+         * - null/空串/解析失败 → 返回 [PhotoType.DEFAULT_CONFIGS]（向后兼容首次安装与损坏数据）
+         * - 解析结果为空数组 → 返回 [PhotoType.DEFAULT_CONFIGS]（兜底，避免无类型可用）
+         */
+        fun deserializeConfigs(json: String?): List<PhotoTypeConfig> {
+            if (json.isNullOrBlank()) return PhotoType.DEFAULT_CONFIGS
+            return runCatching {
+                val arr = JSONArray(json)
+                val result = ArrayList<PhotoTypeConfig>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    result.add(
+                        PhotoTypeConfig(
+                            id = obj.getString("id"),
+                            displayName = obj.getString("displayName"),
+                        ),
+                    )
+                }
+                result.ifEmpty { PhotoType.DEFAULT_CONFIGS }
+            }.getOrDefault(PhotoType.DEFAULT_CONFIGS)
+        }
     }
 }

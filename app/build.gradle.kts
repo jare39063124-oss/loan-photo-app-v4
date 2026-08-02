@@ -12,7 +12,7 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-// 读取 local.properties（包含 DeepSeek API key，不明文提交到 git）
+// 读取 local.properties（包含 OpenRouter API key，不明文提交到 git）
 val localProperties = Properties().apply {
     val localPropsFile = rootProject.file("local.properties")
     if (localPropsFile.exists()) {
@@ -57,16 +57,16 @@ android {
         applicationId = "com.banktool.loanphoto"
         minSdk = 26  // Apache POI 5.x requires API 26 (MethodHandle); all target devices are API 30+
         targetSdk = 35
-        versionCode = 17
-        versionName = "4.1.5"
+        versionCode = 18
+        versionName = "4.1.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
 
-        // 注入 DeepSeek API key（不明文出现在源代码中，从 local.properties 读取）
-        buildConfigField("String", "DEEPSEEK_API_KEY", "\"${localProperties.getProperty("DEEPSEEK_API_KEY", "")}\"")
-        buildConfigField("String", "DEEPSEEK_API_URL", "\"https://api.deepseek.com/v1\"")
-        buildConfigField("String", "DEEPSEEK_MODEL", "\"deepseek-v4-flash\"")
+        // 注入 OpenRouter API key（不明文出现在源代码中，从 local.properties 读取）
+        buildConfigField("String", "OPENROUTER_API_KEY", "\"${localProperties.getProperty("openrouter.api.key", "")}\"")
+        buildConfigField("String", "OPENROUTER_API_URL", "\"https://openrouter.ai/api/v1\"")
+        buildConfigField("String", "OPENROUTER_MODEL", "\"nvidia/nemotron-3-ultra-550b-a55b:free\"")
         buildConfigField("String", "EXPECTED_SIGNING_HASH", "\"$expectedSigningHash\"")
     }
 

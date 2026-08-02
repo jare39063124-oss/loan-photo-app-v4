@@ -20,7 +20,7 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
-    private const val DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1/"
+    private const val OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/"
     private const val HTTP_REFERER = "https://github.com/jare39063124-oss/loan-photo-app-v4"
 
     @Provides
@@ -53,11 +53,12 @@ object NetworkModule {
                 val request = chain.request().newBuilder()
                     .addHeader(
                         "Authorization",
-                        "Bearer ${BuildConfig.DEEPSEEK_API_KEY}"
+                        "Bearer ${BuildConfig.OPENROUTER_API_KEY}"
                     )
                     .addHeader("Content-Type", "application/json")
+                    // OpenRouter 推荐头：HTTP-Referer 用于应用识别，X-Title 在 OpenRouter 控制台展示
                     .addHeader("HTTP-Referer", HTTP_REFERER)
-                    .addHeader("X-Title", "LoanPhotoApp")
+                    .addHeader("X-Title", "资产盘点拍照")
                     .build()
                 chain.proceed(request)
             }
@@ -75,7 +76,7 @@ object NetworkModule {
         moshi: Moshi
     ): DeepSeekApi {
         return Retrofit.Builder()
-            .baseUrl(DEEPSEEK_BASE_URL)
+            .baseUrl(OPENROUTER_BASE_URL)
             .client(okHttpClient)
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
