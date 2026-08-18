@@ -1,6 +1,7 @@
 package com.banktool.loanphoto.di
 
 import com.banktool.loanphoto.BuildConfig
+import com.banktool.loanphoto.data.api.ApiKeyDecoder
 import com.banktool.loanphoto.data.api.DeepSeekApi
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -53,7 +54,7 @@ object NetworkModule {
                 val request = chain.request().newBuilder()
                     .addHeader(
                         "Authorization",
-                        "Bearer ${BuildConfig.OPENROUTER_API_KEY}"
+                        "Bearer ${ApiKeyDecoder.decode(BuildConfig.OPENROUTER_API_KEY_OBF)}"
                     )
                     .addHeader("Content-Type", "application/json")
                     // OpenRouter 推荐头：HTTP-Referer 用于应用识别，X-Title 在 OpenRouter 控制台展示

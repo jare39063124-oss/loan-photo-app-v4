@@ -187,6 +187,8 @@ class WatermarkGenerator @Inject constructor() {
      * @param location 位置结果；为 null 时跳过 GPS EXIF 写入（仅复制原 EXIF）
      * @param config 水印配置
      * @param photoQuality 照片质量等级（缩放最长边上限，默认 [PhotoQuality.HIGH]）
+     * @param overrides 水印文本行覆盖（key: "date"/"serial"/"address"/"latlng"），
+     *        绘制前按行内容特征识别并替换对应段；空值/空 map 不替换（默认行为不变）
      * @return 输出文件路径（成功时与 outputPath 相同）
      */
     suspend fun drawAndSave(
@@ -195,6 +197,7 @@ class WatermarkGenerator @Inject constructor() {
         location: LocationResult?,
         config: WatermarkConfig,
         photoQuality: PhotoQuality = PhotoQuality.HIGH,
+        overrides: Map<String, String> = emptyMap(),
     ): String? = withContext(Dispatchers.IO) {
         try {
             val sourceFile = File(sourcePath)
@@ -262,7 +265,7 @@ class WatermarkGenerator @Inject constructor() {
             val finalBitmap = if (config.enabled) {
                 drawWatermark(
                     bitmap = scaledBitmap,
-                    segments = config.segments,
+                    segments = applySegmentOverrides(config.segments, overrides),
                     position = config.position,
                     fontSize = config.fontSize,
                     opacity = config.opacity,
@@ -353,6 +356,36 @@ class WatermarkGenerator @Inject constructor() {
             }
         }
         return segments
+    }
+
+    /**
+     * 按行内容特征识别水印段并应用 [overrides] 覆盖（绘制前单次应用）。
+     *
+     * 段识别依据 [buildSegments] 的确定性输出格式：
+     * - 日期段：`yyyy年MM月dd日` → key "date"
+     * - 序号段：以「序号:」开头 → key "serial"（覆盖值不带前缀时自动补「序号:」）
+     * - 经纬度段：`lat,lng`（各 6 位小数）→ key "latlng"
+     * - 其余行视为地址段 → key "address"（buildSegments 每类只输出一行）
+     *
+     * override 值为空白时不覆盖；overrides 为空时原样返回（现有调用行为不变）。
+     */
+    private fun applySegmentOverrides(
+        segments: List<String>,
+        overrides: Map<String, String>,
+    ): List<String> {
+        if (overrides.isEmpty() || segments.isEmpty()) return segments
+        fun overrideOf(key: String): String? =
+            overrides[key]?.takeIf { it.isNotBlank() }
+        return segments.map { line ->
+            when {
+                DATE_SEGMENT_REGEX.matches(line) -> overrideOf("date") ?: line
+                line.startsWith(SERIAL_PREFIX) -> overrideOf("serial")?.let {
+                    if (it.startsWith(SERIAL_PREFIX)) it else "$SERIAL_PREFIX$it"
+                } ?: line
+                LATLNG_SEGMENT_REGEX.matches(line) -> overrideOf("latlng") ?: line
+                else -> overrideOf("address") ?: line
+            }
+        }
     }
 
     /**
@@ -456,5 +489,8 @@ class WatermarkGenerator @Inject constructor() {
         const val BG_OPACITY_RATIO = 0.55f
         const val JPEG_QUALITY = 92
         const val EDGE_MARGIN_RATIO = 0.03f // 水印距图片边缘 3% 空隙
+        const val SERIAL_PREFIX = "序号:"
+        val DATE_SEGMENT_REGEX = Regex("""^\d{4}年\d{1,2}月\d{1,2}日$""")
+        val LATLNG_SEGMENT_REGEX = Regex("""^-?\d{1,3}\.\d+,-?\d{1,3}\.\d+$""")
     }
 }

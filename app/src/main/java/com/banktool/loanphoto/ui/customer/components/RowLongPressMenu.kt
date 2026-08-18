@@ -2,6 +2,7 @@ package com.banktool.loanphoto.ui.customer.components
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.DropdownMenu
@@ -17,10 +18,11 @@ import com.banktool.loanphoto.ui.theme.Warning
 /**
  * 行长按菜单。
  *
- * 三个选项：
+ * 四个选项：
  * - "标记为同类型代表性户型"（可切换标记/取消）
  * - "查看已拍照片"
  * - "编辑备注"
+ * - "编辑条目"（全量编辑序号/客户名/地址/性质/备注）
  *
  * @param expanded 是否展开
  * @param isMarked 当前行是否已被标记为同类型代表性户型
@@ -28,6 +30,7 @@ import com.banktool.loanphoto.ui.theme.Warning
  * @param onToggleBatchMark 切换标记状态
  * @param onViewPhotos 查看已拍照片
  * @param onEditRemark 编辑备注
+ * @param onEditEntry 编辑条目（全量字段）
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,6 +41,7 @@ fun RowLongPressMenu(
     onToggleBatchMark: () -> Unit,
     onViewPhotos: () -> Unit,
     onEditRemark: () -> Unit,
+    onEditEntry: () -> Unit = {},
 ) {
     DropdownMenu(
         expanded = expanded,
@@ -87,6 +91,20 @@ fun RowLongPressMenu(
             onClick = {
                 onDismiss()
                 onEditRemark()
+            },
+        )
+        DropdownMenuItem(
+            text = { Text("编辑条目") },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Filled.EditNote,
+                    contentDescription = null,
+                    tint = Accent,
+                )
+            },
+            onClick = {
+                onDismiss()
+                onEditEntry()
             },
         )
     }

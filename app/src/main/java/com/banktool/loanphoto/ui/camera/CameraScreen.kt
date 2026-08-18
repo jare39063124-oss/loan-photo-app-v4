@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.FlashlightOn
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -44,7 +45,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -90,6 +94,13 @@ fun CameraScreen(
     val guideLineConfig by settingsViewModel.guideLineConfig.collectAsStateWithLifecycle()
     // 拍照类型配置（用户可自定义名称/数量），由 SettingsViewModel 持久化提供
     val photoTypeConfigs by settingsViewModel.photoTypeConfigs.collectAsStateWithLifecycle()
+    // 水印预览/编辑：当前持久化水印配置、会话级文本覆盖、只读经纬度文本
+    var showWatermarkDialog by remember { mutableStateOf(false) }
+    val watermarkConfig by settingsViewModel.watermarkConfig.collectAsStateWithLifecycle()
+    val watermarkOverrides by viewModel.watermarkOverrides.collectAsStateWithLifecycle()
+    val lastKnownLatlng by produceState(initialValue = "拍照时自动定位") {
+        value = viewModel.lastKnownLatlngText()
+    }
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -191,6 +202,25 @@ fun CameraScreen(
                     .padding(top = 96.dp, start = 12.dp),
             )
 
+            // 顶部右侧: 水印预览/编辑入口（与 CustomerInfoPill 同层，不遮挡 PhotoTypeSelector）
+            Surface(
+                shape = CircleShape,
+                color = Color(0xCC404040),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 96.dp, end = 12.dp)
+                    .size(40.dp),
+            ) {
+                IconButton(onClick = { showWatermarkDialog = true }) {
+                    Icon(
+                        imageVector = Icons.Filled.TextFields,
+                        contentDescription = "水印预览与编辑",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+            }
+
             // 底部: 缩放控制 + 控制条（Column 垂直排列）
             Column(
                 modifier = Modifier
@@ -256,6 +286,21 @@ fun CameraScreen(
                     totalCount = uiState.totalPhotos,
                     onDismiss = viewModel::dismissGallery,
                     customerName = uiState.primaryRow?.borrower ?: "",
+                )
+            }
+
+            // 水印预览/编辑对话框（会话级覆盖，确定后对本次及后续拍照立即生效）
+            if (showWatermarkDialog) {
+                WatermarkPreviewDialog(
+                    config = watermarkConfig,
+                    primaryRow = uiState.primaryRow,
+                    currentOverrides = watermarkOverrides,
+                    latLngText = lastKnownLatlng,
+                    onConfirm = { overrides ->
+                        viewModel.updateWatermarkOverrides(overrides)
+                        showWatermarkDialog = false
+                    },
+                    onDismiss = { showWatermarkDialog = false },
                 )
             }
         }

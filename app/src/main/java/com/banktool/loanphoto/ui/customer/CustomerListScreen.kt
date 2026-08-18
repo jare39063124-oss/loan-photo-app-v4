@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -63,9 +65,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
@@ -80,6 +84,8 @@ import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.SearchField
 import com.banktool.loanphoto.ui.camera.PhotoGallerySheet
 import com.banktool.loanphoto.ui.customer.components.CustomerRowItem
+import com.banktool.loanphoto.ui.customer.components.EditEntryDialog
+import com.banktool.loanphoto.ui.customer.components.NavigationDialog
 import com.banktool.loanphoto.ui.customer.components.RecentFilesBottomSheet
 import com.banktool.loanphoto.ui.customer.components.RowLongPressMenu
 import com.banktool.loanphoto.ui.progress.RemarkDialog
@@ -131,6 +137,12 @@ fun CustomerListScreen(
 
     // 已拍照片画廊 BottomSheet 当前关联的行（null 表示不显示）
     var gallerySheetRow by remember { mutableStateOf<CustomerRow?>(null) }
+
+    // 地址导航弹窗当前的目标地址（null 表示不显示）
+    var selectedNavAddress by remember { mutableStateOf<String?>(null) }
+
+    // 「编辑条目」弹窗当前关联的行（null 表示不显示）
+    var editEntryRow by remember { mutableStateOf<CustomerRow?>(null) }
 
     // 添加查勘条目弹窗是否显示
     var showAddEntryDialog by remember { mutableStateOf(false) }
@@ -249,6 +261,28 @@ fun CustomerListScreen(
                 viewModel.saveRowRemark(rowIndex, content)
             },
             onDismiss = { viewModel.dismissEditRemark() },
+        )
+    }
+
+    // 地址导航弹窗（高德/百度）
+    selectedNavAddress?.let { address ->
+        NavigationDialog(
+            address = address,
+            onDismiss = { selectedNavAddress = null },
+        )
+    }
+
+    // 编辑条目弹窗（全量编辑：备注初始值合并生效值，_row_remarks 优先于 Excel F 列）
+    editEntryRow?.let { row ->
+        val effectiveRemark = viewModel.getRowRemark(row.rowIndex).ifBlank { row.remark }
+        val initialRow = if (effectiveRemark == row.remark) row else row.copy(remark = effectiveRemark)
+        EditEntryDialog(
+            initial = initialRow,
+            onSave = { updated ->
+                editEntryRow = null
+                viewModel.updateCustomerRow(updated)
+            },
+            onDismiss = { editEntryRow = null },
         )
     }
 
@@ -423,6 +457,9 @@ fun CustomerListScreen(
                 onSearchQueryChange = viewModel::onSearchQueryChange,
                 onSearchFieldChange = viewModel::onSearchFieldChange,
                 onToggleSelectAll = viewModel::toggleSelectAll,
+                history = uiState.searchHistory,
+                onSearchSubmit = viewModel::onSearchSubmit,
+                onClearHistory = viewModel::clearSearchHistory,
             )
 
             // 二级搜索栏：在一级结果基础上二次过滤，尺寸约为一级的 80%
@@ -435,6 +472,9 @@ fun CustomerListScreen(
                 onSearchQueryChange = viewModel::onSecondSearchQueryChange,
                 onSearchFieldChange = viewModel::onSecondSearchFieldChange,
                 onToggleSelectAll = {},
+                history = uiState.searchHistory,
+                onSearchSubmit = viewModel::onSearchSubmit,
+                onClearHistory = viewModel::clearSearchHistory,
                 showSelectAll = false,
                 fontSize = 12.sp,
                 fieldChipWidth = 96.dp,
@@ -501,6 +541,12 @@ fun CustomerListScreen(
                                         onEditRemark = {
                                             viewModel.startEditRemark(row.rowIndex)
                                         },
+                                        onAddressClick = {
+                                            selectedNavAddress = listOf(
+                                                row.addrGeneral,
+                                                row.addrDetail,
+                                            ).filter { it.isNotBlank() }.joinToString(" ")
+                                        },
                                         onLongClick = { menuExpanded = true },
                                     )
                                     RowLongPressMenu(
@@ -514,6 +560,7 @@ fun CustomerListScreen(
                                         onEditRemark = {
                                             viewModel.startEditRemark(row.rowIndex)
                                         },
+                                        onEditEntry = { editEntryRow = row },
                                     )
                                 }
                             }
@@ -563,7 +610,7 @@ fun CustomerListScreen(
 }
 
 /**
- * 搜索栏：全选 CheckBox（可选） + 字段下拉 + 输入框。
+ * 搜索栏：全选 CheckBox（可选） + 字段下拉 + 输入框 + 搜索历史下拉。
  *
  * 一级搜索栏显示全选 CheckBox；二级搜索栏通过 [showSelectAll]=false 隐藏 CheckBox，
  * 并通过 [fontSize]/[fieldChipWidth]/[rowVerticalPadding]/[chipHorizontalPadding]/
@@ -571,6 +618,9 @@ fun CustomerListScreen(
  *
  * v4.1.4 起所有字段（含 VISITED/UNVISITED）均显示输入框；
  * VISITED/UNVISITED 选中时由 ViewModel 先按状态过滤再按文本匹配全量字段。
+ *
+ * v4.1.5 搜索历史：输入框聚焦且文本为空时展示最近 5 条搜索历史（一/二级共用），
+ * 点击历史项填入并过滤；键盘搜索动作提交非空 query 时写入历史（[onSearchSubmit]）。
  */
 @Composable
 private fun SearchBarRow(
@@ -581,6 +631,10 @@ private fun SearchBarRow(
     onSearchQueryChange: (String) -> Unit,
     onSearchFieldChange: (SearchField) -> Unit,
     onToggleSelectAll: () -> Unit,
+    // 搜索历史（一/二级共用）
+    history: List<String> = emptyList(),
+    onSearchSubmit: (String) -> Unit = {},
+    onClearHistory: () -> Unit = {},
     // 二级搜索栏样式参数（默认值匹配一级搜索栏）
     showSelectAll: Boolean = true,
     fontSize: TextUnit = 14.sp,
@@ -663,32 +717,82 @@ private fun SearchBarRow(
 
         // 搜索输入框：所有字段（含 VISITED/UNVISITED）均显示输入框。
         // VISITED/UNVISITED 选中时由 ViewModel 先按状态过滤再按文本匹配。
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = onSearchQueryChange,
-            modifier = Modifier.weight(1f),
-            placeholder = {
-                Text(
-                    text = "搜索${searchField.displayName}",
-                    color = TextSecondary,
-                    fontSize = fontSize,
+        // Box 作为搜索历史 DropdownMenu 的锚点。
+        var historyExpanded by remember { mutableStateOf(false) }
+        Box(modifier = Modifier.weight(1f)) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { state ->
+                        // 聚焦且文本为空时展示搜索历史；失焦收起
+                        historyExpanded = state.isFocused &&
+                            searchQuery.isEmpty() &&
+                            history.isNotEmpty()
+                    },
+                placeholder = {
+                    Text(
+                        text = "搜索${searchField.displayName}",
+                        color = TextSecondary,
+                        fontSize = fontSize,
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.Search,
+                        contentDescription = null,
+                        tint = TextSecondary,
+                    )
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(8.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Accent,
+                    unfocusedBorderColor = Divider,
+                ),
+                textStyle = TextStyle(fontSize = fontSize, color = TextColor),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    // 键盘搜索动作：提交非空 query 时写入搜索历史
+                    onSearch = { onSearchSubmit(searchQuery) },
+                ),
+            )
+
+            // 搜索历史下拉（最近 5 条，一/二级共用）
+            DropdownMenu(
+                expanded = historyExpanded,
+                onDismissRequest = { historyExpanded = false },
+            ) {
+                history.forEach { item ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = item,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        onClick = {
+                            historyExpanded = false
+                            onSearchQueryChange(item)
+                        },
+                    )
+                }
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = "清空历史",
+                            color = TextSecondary,
+                        )
+                    },
+                    onClick = {
+                        historyExpanded = false
+                        onClearHistory()
+                    },
                 )
-            },
-            leadingIcon = {
-                Icon(
-                    imageVector = Icons.Filled.Search,
-                    contentDescription = null,
-                    tint = TextSecondary,
-                )
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(8.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Accent,
-                unfocusedBorderColor = Divider,
-            ),
-            textStyle = TextStyle(fontSize = fontSize, color = TextColor),
-        )
+            }
+        }
     }
 }
 

@@ -5,6 +5,7 @@ import com.banktool.loanphoto.BuildConfig
 import com.banktool.loanphoto.data.api.DeepSeekApi
 import com.banktool.loanphoto.data.dto.ChatMessage
 import com.banktool.loanphoto.data.dto.ChatRequest
+import com.banktool.loanphoto.data.dto.ProviderLimit
 import com.banktool.loanphoto.data.dto.ReportRecord
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.PhotoRecord
@@ -29,9 +30,17 @@ class AiRepository @Inject constructor(
 
     companion object {
         private const val TAG = "AiRepository"
-        // 模型名统一来自 BuildConfig（build.gradle.kts 注入），避免与设置页展示不一致
-        private val MODEL = BuildConfig.OPENROUTER_MODEL
-        private val CHAT_MODEL = BuildConfig.OPENROUTER_MODEL
+
+        /**
+         * 免费模型硬锁定：所有 AI 请求（chat + 报告生成）仅允许 :free 后缀模型，
+         * 请求发送前校验，配置失误时快速失败，防止调用付费模型产生费用。
+         */
+        private fun requireFreeModel(): String {
+            require(BuildConfig.OPENROUTER_MODEL.endsWith(":free")) {
+                "仅允许免费模型（当前配置：${BuildConfig.OPENROUTER_MODEL}）"
+            }
+            return BuildConfig.OPENROUTER_MODEL
+        }
     }
 
     /**
@@ -50,18 +59,18 @@ class AiRepository @Inject constructor(
         visitNote: String?,
         specialLog: String? = null
     ): List<ReportRecord> = withContext(Dispatchers.IO) {
-        if (BuildConfig.OPENROUTER_API_KEY.isBlank()) {
+        if (BuildConfig.OPENROUTER_API_KEY_OBF.isBlank()) {
             Timber.e("OpenRouter API key is blank")
             throw IllegalStateException("OpenRouter API key 未配置")
         }
+        requireFreeModel()
 
         val request = ReportPromptBuilder.buildChatRequest(
             allRecords = allRecords,
             visitedRecords = visitedRecords,
             batchMarkedCount = batchMarkedCount,
             visitNote = visitNote,
-            specialLog = specialLog,
-            model = MODEL
+            specialLog = specialLog
         )
 
         Timber.i("Sending report generation request: ${allRecords.size} total customers (${visitedRecords.size} visited)")
@@ -225,11 +234,12 @@ class AiRepository @Inject constructor(
      */
     suspend fun chat(messages: List<ChatMessage>): String = withContext(Dispatchers.IO) {
         val request = ChatRequest(
-            model = CHAT_MODEL,
+            model = requireFreeModel(),
             messages = messages,
             temperature = 0.5,
-            maxTokens = 2048,
-            stream = false
+            maxTokens = 8192,
+            stream = false,
+            provider = ProviderLimit(allowFallbacks = false)
         )
 
         val response = deepSeekApi.chatCompletions(request)

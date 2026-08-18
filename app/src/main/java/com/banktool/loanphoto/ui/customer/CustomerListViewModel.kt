@@ -54,6 +54,8 @@ data class RecentFileItem(
  * 6. 管理最近文件列表（含数据指示器）
  * 7. 行级备注编辑（_row_remarks）
  * 8. 同类型代表性户型标记（batch_marked）
+ * 9. 搜索历史（最近 5 条，SharedPreferences，一/二级搜索栏共用）
+ * 10. 条目全量编辑（updateCustomerRow：Excel 整行回写 + _row_remarks 同步 + 内存刷新）
  */
 @HiltViewModel
 class CustomerListViewModel @Inject constructor(
@@ -97,6 +99,8 @@ class CustomerListViewModel @Inject constructor(
         val batchMarkedKeys: Set<String> = emptySet(),
         val editingRemarkRowIndex: Int? = null,
         val message: String? = null,
+        // 搜索历史（一/二级搜索栏共用，最新在前，最多 5 条）
+        val searchHistory: List<String> = emptyList(),
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -120,8 +124,11 @@ class CustomerListViewModel @Inject constructor(
     private val _exportState = MutableStateFlow<ExportState>(ExportState.Idle)
     val exportState: StateFlow<ExportState> = _exportState.asStateFlow()
 
+    private val searchHistoryStore = SearchHistoryStore(context)
+
     init {
         loadRecentFiles()
+        _uiState.update { it.copy(searchHistory = searchHistoryStore.getHistory()) }
     }
 
     /**
@@ -297,6 +304,27 @@ class CustomerListViewModel @Inject constructor(
             )
             current.copy(secondSearchField = field, filteredIndices = filtered)
         }
+    }
+
+    // ---- 搜索历史 ----
+
+    /**
+     * 提交搜索（键盘搜索动作触发）：非空 query 写入搜索历史（去重、最新在前、最多 5 条）。
+     *
+     * 一/二级搜索栏共用同一份历史；过滤本身已由 onSearchQueryChange 实时完成，
+     * 此处只负责落盘与刷新 [UiState.searchHistory]。
+     */
+    fun onSearchSubmit(query: String) {
+        val q = query.trim()
+        if (q.isEmpty()) return
+        searchHistoryStore.add(q)
+        _uiState.update { it.copy(searchHistory = searchHistoryStore.getHistory()) }
+    }
+
+    /** 清空搜索历史。 */
+    fun clearSearchHistory() {
+        searchHistoryStore.clear()
+        _uiState.update { it.copy(searchHistory = emptyList()) }
     }
 
     /**
@@ -539,6 +567,93 @@ class CustomerListViewModel @Inject constructor(
             } catch (e: Exception) {
                 Timber.w(e, "添加查勘条目失败")
                 _uiState.update { it.copy(error = "添加失败：请确认文件可写") }
+            }
+        }
+    }
+
+    // ---- 编辑条目 ----
+
+    /**
+     * 更新一条客户条目（长按菜单「编辑条目」）。
+     *
+     * [updated] 由 EditEntryDialog 构造（copy 保留 rowIndex/progressKey），落盘策略沿用
+     * 行级备注的双写机制并扩展为整行更新：
+     * 1. Excel 整行回写 A-F 列（[ExcelWriter.updateRowToExcel]）；
+     * 2. progress.json 的 _row_remarks 同步备注（[ProgressRepository.saveRowRemark]），
+     *    与「编辑备注」功能保持一致（显示时 _row_remarks 优先于 Excel F 列）；
+     * 3. 内存刷新 [UiState.rows]（StateFlow，列表 UI 自动刷新）与 [PhotoSessionHolder.rows]
+     *    （按 rowIndex 替换）。progressKey/rowIndex 保持不变，拍照进度关联不丢。
+     *
+     * Excel 写入失败不阻断内存更新，通过 [UiState.error] 提示（与 saveRowRemark 行为一致）。
+     */
+    fun updateCustomerRow(updated: CustomerRow) {
+        viewModelScope.launch {
+            try {
+                // 1. Excel 整行回写（A=序号 B=客户名 C=地址概 D=地址详 E=性质 F=备注）
+                val currentUri = uiState.value.excelUri
+                var excelWriteOk = true
+                if (currentUri.isNotBlank()) {
+                    excelWriteOk = runCatching {
+                        excelWriter.updateRowToExcel(
+                            Uri.parse(currentUri),
+                            updated.rowIndex,
+                            mapOf(
+                                0 to updated.serial,
+                                1 to updated.borrower,
+                                2 to updated.addrGeneral,
+                                3 to updated.addrDetail,
+                                4 to updated.propertyType,
+                                5 to updated.remark,
+                            ),
+                        )
+                    }.getOrDefault(false)
+                    if (!excelWriteOk) {
+                        Timber.w("条目整行回写 Excel 失败, rowIndex=%d", updated.rowIndex)
+                    }
+                }
+
+                // 2. 行级备注同步到 progress.json（_row_remarks 显示优先级高于 Excel F 列）
+                progressRepository.saveRowRemark(updated.rowIndex, updated.remark)
+
+                // 3. 内存刷新：UiState.rows + rowRemarks（rows 为 StateFlow，列表自动刷新）
+                _uiState.update { current ->
+                    val newRows = current.rows.map { row ->
+                        if (row.rowIndex == updated.rowIndex) updated else row
+                    }
+                    val newRemarks = current.rowRemarks.toMutableMap().apply {
+                        if (updated.remark.isBlank()) {
+                            remove(updated.rowIndex.toString())
+                        } else {
+                            put(updated.rowIndex.toString(), updated.remark)
+                        }
+                    }
+                    if (excelWriteOk) {
+                        current.copy(
+                            rows = newRows,
+                            rowRemarks = newRemarks,
+                            message = "条目已更新",
+                        )
+                    } else {
+                        current.copy(
+                            rows = newRows,
+                            rowRemarks = newRemarks,
+                            error = "Excel 写入失败，修改仅保存在 App 内",
+                        )
+                    }
+                }
+
+                // 4. 同步 PhotoSessionHolder（rows 为当前会话行集合，按 rowIndex 替换）
+                val holderRows = photoSessionHolder.rows
+                if (holderRows.any { it.rowIndex == updated.rowIndex }) {
+                    photoSessionHolder.setPhotoRows(
+                        holderRows.map { row ->
+                            if (row.rowIndex == updated.rowIndex) updated else row
+                        },
+                    )
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "更新条目失败")
+                _uiState.update { it.copy(error = e.message ?: "更新条目失败") }
             }
         }
     }

@@ -166,22 +166,8 @@ fun SettingsScreen(
                 SettingsRow(label = "设备识别码", value = deviceId)
                 SettingsDivider()
                 SettingsRow(label = "设备信息", value = deviceInfo)
-                // 体验版额外展示有效期
-                if (BuildConfig.IS_TRIAL) {
-                    SettingsDivider()
-                    SettingsRow(label = "有效期至", value = BuildConfig.EXPIRY_DATE)
-                }
                 SettingsDivider()
                 SettingsRow(label = "联系方式", value = "15940454123（微信同）")
-                if (BuildConfig.IS_TRIAL) {
-                    SettingsDivider()
-                    Text(
-                        text = "重要说明：手机恢复出厂设置后，设备识别码将改变，重新安装将导致 App 不可用。在使用有效期内联系作者，仅可获得一次重新激活机会。",
-                        fontSize = 12.sp,
-                        color = TextSecondary,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
-                }
             }
 
             // AI 模型

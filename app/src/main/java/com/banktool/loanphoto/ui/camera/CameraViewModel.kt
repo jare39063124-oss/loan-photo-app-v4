@@ -16,6 +16,7 @@ import com.banktool.loanphoto.data.camera.PhotoQuality
 import com.banktool.loanphoto.data.camera.ThumbnailGenerator
 import com.banktool.loanphoto.data.camera.WatermarkConfig
 import com.banktool.loanphoto.data.camera.WatermarkGenerator
+import com.banktool.loanphoto.data.location.LocationSnapshotGenerator
 import com.banktool.loanphoto.data.naming.NamingConfigRepository
 import com.banktool.loanphoto.data.naming.NamingRuleGenerator
 import com.banktool.loanphoto.data.watermark.WatermarkConfigRepository
@@ -107,11 +108,22 @@ class CameraViewModel @Inject constructor(
     private val namingRuleGenerator: NamingRuleGenerator,
     private val excelDataIndexRepository: ExcelDataIndexRepository,
     private val watermarkConfigRepository: WatermarkConfigRepository,
+    private val locationSnapshotGenerator: LocationSnapshotGenerator,
     val cameraEngine: CameraEngine,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
+
+    /**
+     * 会话级水印文本覆盖（key: "date"/"serial"/"address"/"latlng"）。
+     *
+     * - 仅在本 ViewModel 生命周期内生效（nav scope），退出相机页销毁即恢复默认
+     * - 每次 [onImageSaved] 读取最新值传给 WatermarkGenerator，对本次及后续拍照立即生效
+     * - 仅存非空白键值；空 map 表示全默认
+     */
+    private val _watermarkOverrides = MutableStateFlow<Map<String, String>>(emptyMap())
+    val watermarkOverrides: StateFlow<Map<String, String>> = _watermarkOverrides.asStateFlow()
 
     /** 主线程 Executor（拍照回调）。 */
     val mainExecutor: Executor by lazy { ContextCompat.getMainExecutor(app) }
@@ -259,6 +271,32 @@ class CameraViewModel @Inject constructor(
             } else {
                 _uiState.update { it.copy(locationFailed = false) }
             }
+        }
+    }
+
+    /**
+     * 更新会话级水印文本覆盖（由水印编辑对话框「确定」触发）。
+     *
+     * 传入的 map 应只含非空白键值；空 map 等价于恢复默认。
+     */
+    fun updateWatermarkOverrides(overrides: Map<String, String>) {
+        _watermarkOverrides.value = overrides.filterValues { it.isNotBlank() }
+    }
+
+    /**
+     * 最近已知经纬度文本（水印预览对话框只读展示用）。
+     *
+     * 依次尝试 LocationService 缓存/历史/DataStore 持久化定位（不限年龄）；
+     * 均无或读取失败时返回占位提示文案。
+     */
+    suspend fun lastKnownLatlngText(): String = withContext(Dispatchers.IO) {
+        try {
+            locationService.getLastKnownLocation()
+                ?.let { "%.6f,%.6f".format(Locale.US, it.lat, it.lng) }
+                ?: "拍照时自动定位"
+        } catch (e: Exception) {
+            Timber.w(e, "读取最近定位失败（水印预览）")
+            "拍照时自动定位"
         }
     }
 
@@ -450,7 +488,9 @@ class CameraViewModel @Inject constructor(
                     showLatlng = savedConfig.showLatlng,
                 )
 
-                // 3. 绘制水印并覆盖保存（同一路径），按照片质量等比缩放
+                // 3. 绘制水印并覆盖保存（同一路径），按照片质量等比缩放；
+                //    每次拍照读取最新 watermarkOverrides，编辑后立即对本张及后续照片生效
+                val watermarkOverridesSnapshot = _watermarkOverrides.value
                 val watermarkedPath = withContext(Dispatchers.IO) {
                     watermarkGenerator.drawAndSave(
                         sourcePath = savedFile.absolutePath,
@@ -458,10 +498,33 @@ class CameraViewModel @Inject constructor(
                         location = location,
                         config = config,
                         photoQuality = photoQuality,
+                        overrides = watermarkOverridesSnapshot,
                     )
                 }
                 if (watermarkedPath == null) {
                     Timber.w("水印生成失败，保留原图: %s", savedFile.absolutePath)
+                }
+
+                // 3.5 首拍判定：以 progressRepository 的进度快照为准（而非目录文件计数）。
+                // 理由：
+                // - progress.json 的 photos 列表只由 markPhoto/markPhotoBatch 写入真实照片，
+                //   定位截图不调用 markPhoto，天然不被计入进度/序号统计；
+                // - 此处读取发生在下方第 4 步 markPhoto 启动之前，primary 本张尚未落盘，
+                //   photos 为空即首拍，无文件系统计数与本张照片写入的竞态；
+                // - location 已是三级回退（实时/5min 历史/DataStore 最后已知）后的结果，
+                //   为 null 说明无任何可用定位，直接不生成截图（无进一步兜底）。
+                val firstShotRows = if (location != null) {
+                    val candidates = listOf(primary) + _uiState.value.multiSelectRows
+                    buildList {
+                        for (row in candidates) {
+                            val isFirstShot = runCatching {
+                                progressRepository.getProgress(row.progressKey)?.photos.isNullOrEmpty()
+                            }.getOrDefault(false)
+                            if (isFirstShot) add(row)
+                        }
+                    }
+                } else {
+                    emptyList()
                 }
 
                 // 4. 并行后处理：水印已完成，savedFile 已写入水印。
@@ -518,6 +581,34 @@ class CameraViewModel @Inject constructor(
                                 excelDataIndexRepository.addProgressKey(md5, k)
                             }
                         }.onFailure { Timber.w(it, "addProgressKey 失败") }
+                    }
+                }
+
+                // 4.5 首拍定位截图：对每个首拍 row 用本次拍照定位生成 3 张比例尺截图（z=15/16/17）。
+                // 刻意用独立 launch 而非加入 joinAll——截图涉及最多 27 个瓦片网络请求（单个 15s 超时），
+                // 等待会显著拖长 isCapturing 状态；失败仅 Timber.w 静默，不 Toast、不重试。
+                // 截图文件不调用 markPhoto，不影响 totalPhotos / ProgressScreen / calculateNextSequence。
+                if (firstShotRows.isNotEmpty()) {
+                    val snapshotLocation = location
+                    if (snapshotLocation != null) {
+                        for (row in firstShotRows) {
+                            viewModelScope.launch(Dispatchers.IO) {
+                                try {
+                                    val outputDir = File(
+                                        app.getExternalFilesDir(null),
+                                        "photos/${row.progressKey}",
+                                    )
+                                    locationSnapshotGenerator.generate(
+                                        row = row,
+                                        lat = snapshotLocation.lat,
+                                        lng = snapshotLocation.lng,
+                                        outputDir = outputDir,
+                                    )
+                                } catch (e: Exception) {
+                                    Timber.w(e, "首拍定位截图生成失败(静默): %s", row.borrower)
+                                }
+                            }
+                        }
                     }
                 }
 

@@ -163,6 +163,67 @@ class ExcelWriter @Inject constructor(
         }
 
     /**
+     * 更新指定行的指定列（条目全量编辑回写，A-F 列）。
+     *
+     * 与 [writeRemarksToExcel] 共用同一套读取/原子写流程，但支持写任意列：
+     * 列映射 0=A 序号, 1=B 客户名, 2=C 地址概, 3=D 地址详, 4=E 性质, 5=F 备注。
+     *
+     * @param uri Excel 文件 content URI
+     * @param rowIndex Excel 物理行号（0-based，含表头，与 CustomerRow.rowIndex 对齐）
+     * @param values key=列号（0-indexed），value=写入内容（空串也会写入以覆盖旧值）
+     * @return true 写入成功；false 失败
+     */
+    suspend fun updateRowToExcel(uri: Uri, rowIndex: Int, values: Map<Int, String>): Boolean =
+        withContext(Dispatchers.IO) {
+            if (values.isEmpty()) {
+                Timber.w("ExcelWriter updateRow: values 为空，跳过写入")
+                return@withContext false
+            }
+            try {
+                val resolver = context.contentResolver
+
+                val workbook = resolver.openInputStream(uri)?.use { input ->
+                    XSSFWorkbook(input)
+                } ?: run {
+                    Timber.w("ExcelWriter updateRow: openInputStream 返回 null, uri=%s", uri)
+                    return@withContext false
+                }
+
+                workbook.use { wb ->
+                    val sheet = wb.getSheetAt(0) ?: run {
+                        Timber.w("ExcelWriter updateRow: 工作簿无工作表")
+                        return@withContext false
+                    }
+
+                    val row = sheet.getRow(rowIndex) ?: sheet.createRow(rowIndex)
+                    for ((col, value) in values) {
+                        val cell = row.getCell(col) ?: row.createCell(col)
+                        cell.setCellValue(value)
+                    }
+                    Timber.i("ExcelWriter updateRow: 更新行 #%d, %d 列", rowIndex, values.size)
+
+                    // 原子写：先序列化到内存，再覆盖 URI
+                    val bytes = ByteArrayOutputStream().use { baos ->
+                        wb.write(baos)
+                        baos.toByteArray()
+                    }
+                    resolver.openOutputStream(uri, "wt")?.use { output ->
+                        output.write(bytes)
+                        output.flush()
+                    } ?: run {
+                        Timber.w("ExcelWriter updateRow: openOutputStream 返回 null")
+                        return@withContext false
+                    }
+                }
+                true
+            } catch (t: Throwable) {
+                // 捕获 Error（如 NoClassDefFoundError）避免闪退，降级为写入失败提示
+                Timber.e(t, "ExcelWriter updateRow: 更新行失败, uri=%s", uri)
+                false
+            }
+        }
+
+    /**
      * 检测数据起始行：若第 1 行像表头则返回 1，否则返回 0。
      * 与 [ExcelDataSource.parseHeader] 逻辑对齐，但仅判断是否为表头。
      */

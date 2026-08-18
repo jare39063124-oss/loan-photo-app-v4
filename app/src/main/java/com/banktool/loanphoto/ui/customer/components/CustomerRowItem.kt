@@ -2,6 +2,7 @@ package com.banktool.loanphoto.ui.customer.components
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -68,6 +69,7 @@ import com.banktool.loanphoto.ui.theme.Warning
  * @param onTakePhoto 点击拍照按钮
  * @param onViewPhotos 点击查看照片按钮（即使 photoCount=0 也会触发）
  * @param onEditRemark 点击编辑备注按钮
+ * @param onAddressClick 点击地址文字回调（弹出导航应用选择）
  * @param onLongClick 长按行回调
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
@@ -83,6 +85,7 @@ fun CustomerRowItem(
     onTakePhoto: () -> Unit,
     onViewPhotos: () -> Unit,
     onEditRemark: () -> Unit,
+    onAddressClick: () -> Unit = {},
     onLongClick: () -> Unit = {},
 ) {
     val containerColor = when {
@@ -159,7 +162,7 @@ fun CustomerRowItem(
 
                     Spacer(modifier = Modifier.size(2.dp))
 
-                    // 第二行：地址概 + 地址详
+                    // 第二行：地址概 + 地址详（可点击，弹出导航应用选择）
                     val address = listOf(row.addrGeneral, row.addrDetail)
                         .filter { it.isNotBlank() }
                         .joinToString(" ")
@@ -168,6 +171,7 @@ fun CustomerRowItem(
                             text = address,
                             color = TextSecondary,
                             fontSize = 14.sp,
+                            modifier = Modifier.clickable { onAddressClick() },
                         )
                         Spacer(modifier = Modifier.size(2.dp))
                     }

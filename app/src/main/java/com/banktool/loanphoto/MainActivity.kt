@@ -19,7 +19,7 @@ import javax.inject.Inject
  * - Hilt 注入
  * - 竖屏锁定（在 AndroidManifest 中配置）
  * - adjustResize 键盘适配（在 AndroidManifest 中配置）
- * - 授权校验：trial 版未授权/已到期时展示 [LockScreen]，阻止进入主界面
+ * - 授权校验：LicenseChecker 恒授权，仅安全校验失败时展示 [LockScreen]，阻止进入主界面
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {

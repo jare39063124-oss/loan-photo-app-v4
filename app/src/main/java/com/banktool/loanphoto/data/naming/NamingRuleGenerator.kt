@@ -19,7 +19,10 @@ import javax.inject.Singleton
  *    若取值为空字符串则同样跳过该段；
  * 3. 将保留的非空段用 `-` 连接，再追加 `-` + 后缀；
  * 4. 若所有段均被跳过（全 NONE 或数据全空），回退 `IMG_<timestamp>.jpg`；
- * 5. 去除文件名中的非法字符 `/ \ : * ? " < > |`，替换为 `_`。
+ * 5. 去除文件名中的非法字符 `/ \ : * ? " < > |`，替换为 `_`；
+ * 6. 字节预算：最终文件名 UTF-8 总长 ≤ [MAX_NAME_BYTES]（240）字节，防止超过 Android
+ *    文件系统 NAME_MAX=255 导致拍保存失败（v4.1.5 修复）。超预算时按优先级截断中段
+ *    （地址段优先，其次最长段），尾部后缀完整保留，截断按 Unicode code point 边界进行。
  */
 @Singleton
 class NamingRuleGenerator @Inject constructor() {
@@ -49,21 +52,21 @@ class NamingRuleGenerator @Inject constructor() {
         sequence: Int,
         timestamp: Long = System.currentTimeMillis(),
     ): String {
-        val parts = buildList {
+        val entries = buildList {
             for (segment in config.segments) {
                 val value = buildSegment(segment, customerRow, timestamp)
                 if (value.isNotEmpty()) {
-                    add(value)
+                    add(segment to value)
                 }
             }
         }
 
-        val name = if (parts.isEmpty()) {
+        val name = if (entries.isEmpty()) {
             // 全 NONE 或所有非 NONE 段数据为空 → 回退
             "IMG_${timestamp}.jpg"
         } else {
             val suffix = "$photoTypeDisplayName-${String.format("%02d", sequence)}.jpg"
-            parts.joinToString("-") + "-" + suffix
+            fitPartsToByteBudget(entries, suffix)
         }
 
         return sanitize(name)
@@ -87,5 +90,100 @@ class NamingRuleGenerator @Inject constructor() {
             sb.append(if (c in illegalChars) '_' else c)
         }
         return sb.toString()
+    }
+
+    /**
+     * 截断中段 parts，使 `中段 + "-" + suffix` 的 UTF-8 总字节数 ≤ [MAX_NAME_BYTES]。
+     *
+     * 规则：
+     * 1. 未超预算时原样拼接返回；
+     * 2. 超预算时贪婪截断：每轮选取当前字节最长的非空中段（同等长度时地址段优先），
+     *    截到「恰好满足总预算」的最长前缀；实践中地址段通常最长即被优先截断，
+     *    且不会把短段无意义截空（短段保留，超额由长段吸收）；
+     * 3. 某段截到空仍超时继续下一轮截最长段；全部中段截空仍超（仅 suffix 自身
+     *    超长的理论场景）由兜底硬截保证不超；
+     * 4. 尾部后缀 `-${类型名}-${NN}.jpg` 永远完整保留——CameraViewModel.calculateNextSequence
+     *    依赖文件名包含 `-${类型名}-`。
+     *
+     * @param entries 中段列表（segment → 段值），均已非空
+     * @param suffix 尾部后缀（`类型名-NN.jpg`）
+     * @return 拼接后的完整文件名
+     */
+    private fun fitPartsToByteBudget(entries: List<Pair<NameSegment, String>>, suffix: String): String {
+        val parts = entries.map { it.second }.toMutableList()
+        val suffixBytes = ("-$suffix").toByteArray(Charsets.UTF_8).size
+        val bodyBudget = MAX_NAME_BYTES - suffixBytes
+
+        // 中段字节数 = 非空段字节和 + 分隔符数（空段过滤后 join，避免出现连续 "--"）
+        fun bodyBytes(): Int =
+            parts.filter { it.isNotEmpty() }.let { nonEmpty ->
+                nonEmpty.sumOf { it.toByteArray(Charsets.UTF_8).size } + nonEmpty.size - 1
+            }
+
+        fun joinBody(): String = parts.filter { it.isNotEmpty() }.joinToString("-")
+
+        if (bodyBytes() <= bodyBudget) {
+            return joinBody() + "-" + suffix
+        }
+
+        // 贪婪截断：每轮截当前最长段（同长度地址段优先），截到恰好满足预算
+        while (bodyBytes() > bodyBudget) {
+            val excess = bodyBytes() - bodyBudget
+            val index = parts.indices
+                .filter { parts[it].isNotEmpty() }
+                .maxByOrNull {
+                    // 主排序键：字节长度；地址段在同长时优先被截
+                    val bytes = parts[it].toByteArray(Charsets.UTF_8).size
+                    val addressBonus = if (entries.getOrNull(it)?.first == NameSegment.ADDRESS) 1 else 0
+                    bytes * 10 + addressBonus
+                } ?: break
+            val currentBytes = parts[index].toByteArray(Charsets.UTF_8).size
+            parts[index] = truncateToByteLimit(parts[index], currentBytes - excess)
+        }
+
+        // 理论兜底：全部截到极限仍超（不可达防御），硬截最后一个非空中段
+        if (bodyBytes() > bodyBudget) {
+            val lastIndex = parts.indices.lastOrNull { parts[it].isNotEmpty() }
+            if (lastIndex != null) {
+                val excess = bodyBytes() - bodyBudget
+                val currentBytes = parts[lastIndex].toByteArray(Charsets.UTF_8).size
+                parts[lastIndex] = truncateToByteLimit(parts[lastIndex], currentBytes - excess)
+            }
+        }
+
+        val nonEmpty = parts.filter { it.isNotEmpty() }
+        return if (nonEmpty.isEmpty()) suffix else nonEmpty.joinToString("-") + "-" + suffix
+    }
+
+    /**
+     * 按 UTF-8 字节预算截断字符串前缀（code point 边界，不截半个中文/emoji）。
+     *
+     * @param maxBytes 允许的最大字节数，≤0 返回空串
+     */
+    private fun truncateToByteLimit(s: String, maxBytes: Int): String {
+        if (maxBytes <= 0) return ""
+        if (s.toByteArray(Charsets.UTF_8).size <= maxBytes) return s
+        val sb = StringBuilder(s.length)
+        var used = 0
+        var index = 0
+        while (index < s.length) {
+            val codePoint = s.codePointAt(index)
+            val charCount = Character.charCount(codePoint)
+            val piece = s.substring(index, index + charCount)
+            val pieceBytes = piece.toByteArray(Charsets.UTF_8).size
+            if (used + pieceBytes > maxBytes) break
+            sb.append(piece)
+            used += pieceBytes
+            index += charCount
+        }
+        return sb.toString()
+    }
+
+    private companion object {
+        /**
+         * 文件名字节预算：Android 文件系统 NAME_MAX=255，留余量取 240，
+         * 兼容多字节文件系统的元数据开销。
+         */
+        const val MAX_NAME_BYTES = 240
     }
 }
