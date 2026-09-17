@@ -69,12 +69,6 @@ import com.banktool.loanphoto.ui.theme.Warning
 /**
  * 进度查看界面。
  *
- * 布局：
- * - Scaffold + TopAppBar（返回 + 标题）
- * - 顶部统计卡片（总客户数 / 已拍摄数 / 待拍摄数）
- * - LazyColumn 每行: 客户名 + 地址 + 已拍数 + 类型标签 + 备注
- * - 底部按钮: 导出备注到Excel / 清除数据 / 走访备注
- *
  * @param excelUri Excel 文件 URI
  * @param fileName Excel 文件名
  * @param onBack 返回回调
@@ -318,7 +312,6 @@ private fun ProgressRowCard(item: ProgressItem) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                // 第一行：[序号] 客户名 + 同类型标记星标
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (item.row.serial.isNotBlank()) {
                         Text(
@@ -351,7 +344,6 @@ private fun ProgressRowCard(item: ProgressItem) {
 
                 Spacer(modifier = Modifier.height(2.dp))
 
-                // 第二行：地址
                 val address = listOf(item.row.addrGeneral, item.row.addrDetail)
                     .filter { it.isNotBlank() }
                     .joinToString(" ")
@@ -365,7 +357,6 @@ private fun ProgressRowCard(item: ProgressItem) {
                     )
                 }
 
-                // 第三行：性质 + 备注
                 val meta = listOf(item.row.propertyType, item.remark)
                     .filter { it.isNotBlank() }
                     .joinToString("  |  ")
@@ -388,9 +379,6 @@ private fun ProgressRowCard(item: ProgressItem) {
     }
 }
 
-/**
- * 圆形照片数 Badge。
- */
 @Composable
 private fun PhotoCountBadge(photoCount: Int) {
     val bgColor = if (photoCount > 0) Accent else Divider

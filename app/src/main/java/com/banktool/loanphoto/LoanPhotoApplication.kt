@@ -11,13 +11,7 @@ import dagger.hilt.android.HiltAndroidApp
 import timber.log.Timber
 import javax.inject.Inject
 
-/**
- * Application 主类
- * - Hilt 依赖注入入口
- * - WorkManager 配置
- * - Timber 日志
- * - 相机会话恢复（camera_session.json 检查）
- */
+/** Application 入口：Hilt 装配、WorkManager 配置、日志初始化与相机会话恢复。 */
 @HiltAndroidApp
 class LoanPhotoApplication : Application(), Configuration.Provider {
 
@@ -47,13 +41,12 @@ class LoanPhotoApplication : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
-        // Timber 日志（仅 Debug 模式）
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
         }
 
         // 文件日志 + 崩溃捕获：按设置页「启用日志记录」开关装配
-        // 同步读 SharedPreferences（log_prefs/log_enabled），保证杀进程重启后崩溃捕获在 onCreate 即就绪
+        // 采用同步读取，保证杀进程重启后崩溃捕获在应用入口即就绪
         val logEnabled = getSharedPreferences("log_prefs", MODE_PRIVATE)
             .getBoolean("log_enabled", false)
         if (logEnabled) {
@@ -64,7 +57,7 @@ class LoanPhotoApplication : Application(), Configuration.Provider {
 
         Timber.i("LoanPhotoApplication onCreate, version=${BuildConfig.VERSION_NAME}")
 
-        // 运行时抗逆向：启动时执行完整性校验（签名 / 调试器 / Frida）
+        // 启动时执行完整性校验（签名 / 调试器 / Frida 检测）
         // 不在此处崩溃，仅记录标志供 MainActivity 读取并展示 LockScreen
         if (!securityChecker.verify(this)) {
             securityFailed = true
@@ -72,7 +65,7 @@ class LoanPhotoApplication : Application(), Configuration.Provider {
             Timber.w("Security check failed at Application: %s", securityFailReason)
         }
 
-        // Phase 2: 检查未完成的 camera_session.json 并恢复
+        // 检查并恢复未完成的拍摄会话
         cameraSessionRecovery.checkAndRecover()
     }
 }

@@ -4,9 +4,9 @@ import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 
 /**
- * camera_session.json 的 DTO（11 字段，兼容 Kivy v3.22.24 snake_case）。
+ * camera_session.json 的 DTO。
  *
- * 字段名通过 @Json 映射到 Kivy 的 snake_case；Kotlin 侧保留 camelCase。
+ * 字段名通过 @Json 映射到 snake_case；Kotlin 侧保留 camelCase。
  */
 @JsonClass(generateAdapter = false)
 data class CameraSessionDto(

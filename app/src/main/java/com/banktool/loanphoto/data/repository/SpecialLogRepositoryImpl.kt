@@ -16,9 +16,8 @@ import javax.inject.Inject
 /**
  * 特殊日志仓库实现。
  *
- * - 文件: `special_logs/<md5>.txt`（纯文本，原子写）
- * - key 为 excelUriMd5（16 位 hex），直接用作文件名
- * - [Mutex] 保护并发读写
+ * 内容按 excelUriMd5（16 位 hex）存为 `special_logs/<md5>.txt` 纯文本，
+ * 写入先落临时文件再原子替换，[Mutex] 保护并发读写。
  *
  * 实现与 [VisitNoteRepositoryImpl] 同构，仅目录与日志前缀不同。
  */

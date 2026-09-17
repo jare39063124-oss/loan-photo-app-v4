@@ -60,6 +60,9 @@ import com.banktool.loanphoto.data.camera.PhotoQuality
 import com.banktool.loanphoto.data.camera.WatermarkConfig
 import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkPosition
+import com.banktool.loanphoto.data.camera.WatermarkSegmentSetting
+import com.banktool.loanphoto.data.camera.WatermarkSource
+import com.banktool.loanphoto.data.camera.defaultWatermarkSegmentSettings
 import com.banktool.loanphoto.data.license.LicenseChecker
 import com.banktool.loanphoto.data.naming.NameSegment
 import com.banktool.loanphoto.domain.entity.PhotoTypeConfig
@@ -83,7 +86,7 @@ import java.io.File
  * 卡片内容：
  * - 关于：应用名「资产盘点拍照工具」+ 版本号（[BuildConfig.VERSION_NAME]）
  * - AI 模型：OpenRouter `openrouter`（[BuildConfig.OPENROUTER_MODEL]）
- * - 照片命名规则：4 段下拉选择器 + 实时预览（持久化到 DataStore）
+ * - 照片命名规则：4 段下拉选择器（CUSTOM 段附带自定义文本输入）+ 实时预览（持久化到 DataStore）
  * - 清空缓存：删除 `getExternalFilesDir/photos` 与 `reports` 目录（带确认对话框）
  *
  * 使用 Fluent Design 浅色主题。
@@ -180,33 +183,41 @@ fun SettingsScreen(
             // 照片命名规则
             SettingsCard(title = "照片命名规则") {
                 Text(
-                    text = "选择 4 段命名组成部分，按顺序以「-」拼接生成照片文件名。",
+                    text = "选择 4 段命名组成部分，按顺序以「-」拼接生成照片文件名。选「自定义文本」的段可在下方输入固定文本。",
                     fontSize = 13.sp,
                     color = TextSecondary,
                 )
                 Spacer(modifier = Modifier.size(12.dp))
-                NamingSegmentDropdown(
-                    label = "段 1",
-                    selected = namingConfig.segment1,
+                NamingSegmentConfigRow(
+                    index = 0,
+                    segment = namingConfig.segment1,
+                    customText = namingConfig.customText1,
                     onSelect = { viewModel.setSegment(0, it) },
+                    onCustomTextChange = { viewModel.setCustomText(0, it) },
                 )
                 Spacer(modifier = Modifier.size(8.dp))
-                NamingSegmentDropdown(
-                    label = "段 2",
-                    selected = namingConfig.segment2,
+                NamingSegmentConfigRow(
+                    index = 1,
+                    segment = namingConfig.segment2,
+                    customText = namingConfig.customText2,
                     onSelect = { viewModel.setSegment(1, it) },
+                    onCustomTextChange = { viewModel.setCustomText(1, it) },
                 )
                 Spacer(modifier = Modifier.size(8.dp))
-                NamingSegmentDropdown(
-                    label = "段 3",
-                    selected = namingConfig.segment3,
+                NamingSegmentConfigRow(
+                    index = 2,
+                    segment = namingConfig.segment3,
+                    customText = namingConfig.customText3,
                     onSelect = { viewModel.setSegment(2, it) },
+                    onCustomTextChange = { viewModel.setCustomText(2, it) },
                 )
                 Spacer(modifier = Modifier.size(8.dp))
-                NamingSegmentDropdown(
-                    label = "段 4",
-                    selected = namingConfig.segment4,
+                NamingSegmentConfigRow(
+                    index = 3,
+                    segment = namingConfig.segment4,
+                    customText = namingConfig.customText4,
                     onSelect = { viewModel.setSegment(3, it) },
+                    onCustomTextChange = { viewModel.setCustomText(3, it) },
                 )
                 Spacer(modifier = Modifier.size(12.dp))
                 SettingsDivider()
@@ -278,33 +289,26 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.size(8.dp))
                 SettingsDivider()
                 Spacer(modifier = Modifier.size(8.dp))
-                // 水印内容逐项显示开关（4 项）
+                // 水印段配置（4 槽下拉，CUSTOM 段附带文本输入）
                 Text(
                     text = "水印内容",
                     fontSize = 12.sp,
                     color = TextSecondary,
                 )
                 Spacer(modifier = Modifier.size(4.dp))
-                WatermarkContentToggle(
-                    label = "拍摄日期",
-                    checked = watermarkConfig.showDate,
-                    onCheckedChange = { viewModel.setShowDate(it) },
-                )
-                WatermarkContentToggle(
-                    label = "序号",
-                    checked = watermarkConfig.showSerial,
-                    onCheckedChange = { viewModel.setShowSerial(it) },
-                )
-                WatermarkContentToggle(
-                    label = "地址",
-                    checked = watermarkConfig.showAddress,
-                    onCheckedChange = { viewModel.setShowAddress(it) },
-                )
-                WatermarkContentToggle(
-                    label = "经纬度",
-                    checked = watermarkConfig.showLatlng,
-                    onCheckedChange = { viewModel.setShowLatlng(it) },
-                )
+                val segmentSettings = watermarkConfig.segmentSettings
+                    ?: defaultWatermarkSegmentSettings()
+                segmentSettings.forEachIndexed { index, setting ->
+                    if (index > 0) Spacer(modifier = Modifier.size(8.dp))
+                    WatermarkSegmentRow(
+                        index = index,
+                        setting = setting,
+                        onSelect = { viewModel.setSegmentSetting(index, it, setting.customText) },
+                        onCustomTextChange = {
+                            viewModel.setSegmentSetting(index, WatermarkSource.CUSTOM, it)
+                        },
+                    )
+                }
             }
 
             // 照片质量
@@ -735,6 +739,45 @@ private fun NamingSegmentDropdown(
 }
 
 /**
+ * 命名段配置行：段下拉选择器 + CUSTOM 段的自定义文本输入框。
+ *
+ * 下拉选「自定义文本」时段下方显示 [OutlinedTextField]，输入即时持久化（[onCustomTextChange]），
+ * 示例预览自动生效；切回其它段类型时文本框消失（仓储层同时清空该段 custom key）。
+ *
+ * @param index 段索引（0..3，仅用于标签展示）
+ * @param segment 当前选中的段
+ * @param customText 该段持久化的自定义文本
+ * @param onSelect 下拉选择回调
+ * @param onCustomTextChange 自定义文本输入回调
+ */
+@Composable
+private fun NamingSegmentConfigRow(
+    index: Int,
+    segment: NameSegment,
+    customText: String,
+    onSelect: (NameSegment) -> Unit,
+    onCustomTextChange: (String) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        NamingSegmentDropdown(
+            label = "段 ${index + 1}",
+            selected = segment,
+            onSelect = onSelect,
+        )
+        if (segment == NameSegment.CUSTOM) {
+            Spacer(modifier = Modifier.size(8.dp))
+            OutlinedTextField(
+                value = customText,
+                onValueChange = onCustomTextChange,
+                label = { Text("自定义文本（段 ${index + 1}）") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/**
  * 水印选项下拉选择器（泛型化，支持字号 / 位置等任意枚举）。
  *
  * 点击触发 [DropdownMenu]，选项由 [options] 提供（显示文本 + 任意值）。
@@ -776,26 +819,42 @@ private fun <T> WatermarkDropdown(
 }
 
 /**
- * 水印内容单项开关行（标签 + Switch，SpaceBetween 布局）。
+ * 水印段配置行：段来源下拉（[WatermarkSource.entries] 9 项）+ CUSTOM 段的自定义文本输入框。
+ *
+ * @param index 槽位索引（0..3）
+ * @param setting 当前槽位配置
+ * @param onSelect 下拉选择回调
+ * @param onCustomTextChange CUSTOM 段自定义文本输入回调
  */
 @Composable
-private fun WatermarkContentToggle(
-    label: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
+private fun WatermarkSegmentRow(
+    index: Int,
+    setting: WatermarkSegmentSetting,
+    onSelect: (WatermarkSource) -> Unit,
+    onCustomTextChange: (String) -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text = label, fontSize = 14.sp, color = TextSecondary)
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        WatermarkDropdown(
+            label = "段 ${index + 1}",
+            selectedText = setting.source.displayName,
+            options = WatermarkSource.entries.map { it.displayName to it },
+            onSelect = onSelect,
+        )
+        if (setting.source == WatermarkSource.CUSTOM) {
+            Spacer(modifier = Modifier.size(8.dp))
+            OutlinedTextField(
+                value = setting.customText,
+                onValueChange = onCustomTextChange,
+                label = { Text("自定义文本（段 ${index + 1}）") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }
 
 /**
- * 参考线单项开关行（标签 + Switch，SpaceBetween 布局，与 [WatermarkContentToggle] 一致）。
+ * 参考线单项开关行（标签 + Switch，SpaceBetween 布局）。
  */
 @Composable
 private fun GuideLineToggle(
@@ -869,21 +928,18 @@ private fun clearCache(context: android.content.Context): String {
     val external = context.getExternalFilesDir(null) ?: return "缓存目录不可用"
     var deletedCount = 0
 
-    // 1. 清理目录（递归删除）
     val dirs = listOf("photos", "thumbnails", "reports", "visit_notes")
     for (name in dirs) {
         val dir = File(external, name)
         if (dir.exists() && dir.deleteRecursively()) deletedCount++
     }
 
-    // 2. 清理文件
     val files = listOf("progress.json", "excel_data_index.json", "camera_session.json")
     for (name in files) {
         val file = File(external, name)
         if (file.exists() && file.delete()) deletedCount++
     }
 
-    // 3. 清理 DataStore（命名配置 + 水印配置 + 最近文件）
     val datastoreDir = File(context.filesDir, "datastore")
     if (datastoreDir.exists()) {
         val datastoreFiles = listOf("naming.preferences_pb", "watermark.preferences_pb", "recent_excel_files.preferences_pb")

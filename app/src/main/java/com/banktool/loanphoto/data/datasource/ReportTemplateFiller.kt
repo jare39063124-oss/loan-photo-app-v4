@@ -50,7 +50,6 @@ class ReportTemplateFiller @Inject constructor(
         private const val COL_FIELD = 4        // E: 现状描述
         private const val COL_REMARK = 5       // F: 备注（是否存在发生风险的可能）
 
-        // 数据区行范围（0-based 行号）
         private const val DATA_START_ROW = 3        // 第4行
         private const val FOOTER_START_ROW_1BASED = 20  // 底部说明起始（第20行，1-based）
     }
@@ -71,14 +70,12 @@ class ReportTemplateFiller @Inject constructor(
         val workbook = context.assets.open(TEMPLATE_ASSET).use { XSSFWorkbook(it) }
         val sheet = workbook.getSheetAt(0)
 
-        // 清空数据区（第4行到第19行，即 0-based DATA_START_ROW..FOOTER_START_ROW_1BASED-2），
-        // 防止模板被污染或残留旧数据，但保留底部说明（第20行起）不动。
+        // 清空数据区，保留底部说明不动。
         val dataEndRowExclusive = FOOTER_START_ROW_1BASED - 1  // 0-based 上界（不含），=19
         for (rowNum in DATA_START_ROW until dataEndRowExclusive) {
             sheet.getRow(rowNum)?.let { sheet.removeRow(it) }
         }
 
-        // 创建单元格样式：边框 + 自动换行 + 左上对齐
         val cellStyle = workbook.createCellStyle().apply {
             wrapText = true
             verticalAlignment = VerticalAlignment.TOP
@@ -89,7 +86,6 @@ class ReportTemplateFiller @Inject constructor(
             borderRight = BorderStyle.THIN
         }
 
-        // 日期格式（B 列）
         val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA)
         val todayStr = dateFmt.format(Date())
 

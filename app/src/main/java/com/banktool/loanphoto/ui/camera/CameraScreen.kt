@@ -72,10 +72,7 @@ private val White = Color(0xFFFFFFFF)
 /**
  * 相机拍照界面。
  *
- * - 顶部: PhotoType 选择 Chip 组（5 种类型水平排列）
- * - 中部: CameraPreviewView（相机预览）
- * - 底部: 关闭按钮（左）/ 拍照按钮（中，大圆形）/ 查看已拍按钮（右）
- * - 拍照成功后不退出，自动准备下一张（连续拍摄模式）
+ * 拍照成功后不退出，自动准备下一张（连续拍摄模式）
  *
  * @param rows 由 CustomerListScreen 传入的选中行
  * @param excelUri 当前 Excel 文件 URI
@@ -90,9 +87,7 @@ fun CameraScreen(
     settingsViewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    // 参考线配置（黄金分割线 / 中心标），由 SettingsViewModel 持久化提供
     val guideLineConfig by settingsViewModel.guideLineConfig.collectAsStateWithLifecycle()
-    // 拍照类型配置（用户可自定义名称/数量），由 SettingsViewModel 持久化提供
     val photoTypeConfigs by settingsViewModel.photoTypeConfigs.collectAsStateWithLifecycle()
     // 水印预览/编辑：当前持久化水印配置、会话级文本覆盖、只读经纬度文本
     var showWatermarkDialog by remember { mutableStateOf(false) }
@@ -104,14 +99,13 @@ fun CameraScreen(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // 初始化（仅一次）
     LaunchedEffect(rows, excelUri) {
         if (rows.isNotEmpty()) {
             viewModel.initWithRows(rows, excelUri)
         }
     }
 
-    // 位置预热：进入相机界面立即触发一次定位（命中缓存后拍照时直接复用）
+    // 提前触发一次定位，拍照时命中缓存可直接复用
     LaunchedEffect(Unit) {
         viewModel.prewarmLocation()
     }
@@ -123,7 +117,7 @@ fun CameraScreen(
         }
     }
 
-    // 位置权限请求（在 CAMERA 之后顺带请求）；获得授权后立即预热
+    // 相机权限已由 CameraPermission 处理，此处仅补请求定位权限
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { result ->
@@ -151,7 +145,6 @@ fun CameraScreen(
         }
     }
 
-    // Toast 消息处理
     LaunchedEffect(uiState.toastMessage) {
         val msg = uiState.toastMessage ?: return@LaunchedEffect
         android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
@@ -172,14 +165,13 @@ fun CameraScreen(
                 modifier = Modifier.fillMaxSize(),
             )
 
-            // 参考线叠加层（黄金分割线 / 中心标），绘制于预览之上、交互控件之下
+            // 参考线叠加层绘制在预览之上、交互控件之下
             CameraGuideLines(
                 goldenRatioGrid = guideLineConfig.goldenRatioGrid,
                 centerMark = guideLineConfig.centerMark,
                 modifier = Modifier.fillMaxSize(),
             )
 
-            // 顶部: PhotoType Chips
             PhotoTypeSelector(
                 current = uiState.currentPhotoType,
                 configs = photoTypeConfigs,
@@ -191,7 +183,6 @@ fun CameraScreen(
                     .padding(top = 8.dp, start = 8.dp, end = 8.dp),
             )
 
-            // 顶部右侧: 客户名 + 已拍数
             CustomerInfoPill(
                 primaryName = uiState.primaryRow?.borrower ?: "",
                 multiCount = uiState.multiSelectRows.size,
@@ -221,7 +212,6 @@ fun CameraScreen(
                 }
             }
 
-            // 底部: 缩放控制 + 控制条（Column 垂直排列）
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -229,7 +219,6 @@ fun CameraScreen(
                     .padding(bottom = 24.dp, start = 16.dp, end = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                // 缩放控制条（仅在设备支持缩放或广角时显示）
                 val showZoomControls = uiState.maxZoomRatio > 1.0f || uiState.hasWideAngle
                 if (showZoomControls) {
                     ZoomControlBar(
@@ -244,7 +233,6 @@ fun CameraScreen(
                     Spacer(modifier = Modifier.height(10.dp))
                 }
 
-                // 闪光灯控制条（仅在相机预览就绪时显示）
                 if (uiState.cameraReady) {
                     FlashControlBar(
                         flashMode = uiState.flashMode,
@@ -266,7 +254,7 @@ fun CameraScreen(
                 )
             }
 
-            // Snackbar：定位失败提示（悬浮于控制条上方，含缩放条+闪光灯条时抬高避免重叠）
+            // 提示条抬高至控制条上方，避免与缩放条/闪光灯条重叠
             SnackbarHost(
                 hostState = snackbarHostState,
                 modifier = Modifier
@@ -402,9 +390,6 @@ private fun CustomerInfoPill(
  * - [minZoomRatio] < 1.0 时显示广角按钮（点击在 0.5x / 1x 间切换）
  * - [maxZoomRatio] > 1.0 时显示滑块（范围 1.0 ~ maxZoomRatio）
  * - 滑块值会被 clamp 到 [1.0, maxZoomRatio]；广角态（zoom < 1.0）时滑块显示在 1.0 位置
- * - 广角按钮为长方形（72x36dp、6dp 圆角），与缩放滑杆在 Column 内垂直堆叠，
- *   spacedBy 8.dp，整体水平居中；缩放滑杆 Row 内 Slider 用 weight(1f) 自适应剩余空间，
- *   倍率文字固定宽度 44dp，确保窄屏不溢出
  * - 两者均不满足时整个 [ZoomControlBar] 不应被调用（由父 Composable 判断）
  */
 @Composable
@@ -732,7 +717,6 @@ private fun CameraGuideLines(
     modifier: Modifier = Modifier,
 ) {
     Canvas(modifier = modifier.fillMaxSize()) {
-        // ===== 黄金分割线 =====
         // 水平线 y = 1/3、2/3；垂直线 x = 1/3、2/3；半透明白色细线
         if (goldenRatioGrid) {
             val gridColor = Color.White.copy(alpha = 0.4f)
@@ -767,8 +751,6 @@ private fun CameraGuideLines(
             )
         }
 
-        // ===== 中心标 =====
-        // 画面中心短十字线（水平 + 垂直），总长约 20dp，半透明白色略亮于网格
         if (centerMark) {
             val markColor = Color.White.copy(alpha = 0.6f)
             val markStrokeWidth = 1.2.dp.toPx()

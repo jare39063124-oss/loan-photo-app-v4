@@ -88,7 +88,7 @@ class AiRepository @Inject constructor(
         val finishReason = choice.finishReason
         Timber.i("AI response length: ${content.length}, finishReason: $finishReason")
 
-        // 截断容错：若响应因 max_tokens 被截断（finishReason == "length"），尝试补全 JSON 数组后重新解析
+        // 截断容错：若 AI 响应因 max_tokens 被截断（finishReason == "length"），尝试补全 JSON 数组后重新解析
         val contentToParse = if (finishReason == "length") {
             Timber.w("Response truncated (finishReason=length), attempting JSON array completion")
             completeJsonArray(content)
@@ -114,15 +114,12 @@ class AiRepository @Inject constructor(
     }
 
     /**
-     * 解析 AI 响应（3 级 fallback）
-     * 1. 直接 JSON 解析
-     * 2. 正则提取 [.*]
-     * 3. 逐行提取 {...}
+     * 解析 AI 响应（3 级 fallback）：先直接 JSON 解析，失败后正则提取 [.*]，
+     * 再退化为逐行提取 {...}。
      *
      * @param finishReason 上游 finishReason（解析失败时写入异常 message 便于诊断，如 "length" 表示截断）
      */
     private fun parseAiResponse(content: String, finishReason: String? = null): List<ReportRecord> {
-        // Level 1: 直接 JSON 解析
         try {
             val cleanContent = content.trim()
                 .removePrefix("```json")
@@ -144,7 +141,7 @@ class AiRepository @Inject constructor(
             Timber.w("Level 1 parse failed: ${e.message}")
         }
 
-        // Level 2: 正则提取 [.*]
+        // Level 2: 正则提取 AI 响应中的 JSON 数组
         try {
             val regex = Regex("""\[[\s\S]*\]""")
             val match = regex.find(content)
@@ -165,7 +162,7 @@ class AiRepository @Inject constructor(
             Timber.w("Level 2 parse failed: ${e.message}")
         }
 
-        // Level 3: 逐行提取 {...}
+        // Level 3: 逐行提取 AI 响应中的单个 JSON 对象
         try {
             val regex = Regex("""\{[^{}]+\}""")
             val matches = regex.findAll(content).map { it.value }.toList()
@@ -189,7 +186,7 @@ class AiRepository @Inject constructor(
         }
 
         Timber.e("All parse levels failed, content preview: ${content.take(200)}")
-        // 异常 message 包含 finishReason，便于诊断（如 "length" 表示响应被 max_tokens 截断）
+        // 异常 message 包含 finishReason，便于诊断 AI 响应问题（如 "length" 表示被 max_tokens 截断）
         val suffix = finishReason?.takeIf { it.isNotBlank() }?.let { "（finishReason=$it）" } ?: ""
         throw IllegalStateException("AI 响应解析失败$suffix")
     }

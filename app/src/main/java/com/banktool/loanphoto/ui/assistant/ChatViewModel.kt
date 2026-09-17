@@ -68,8 +68,8 @@ class ChatViewModel @Inject constructor(
      * - [progressRepository.getAllProgress] 一次性批量读取全部拍照记录，内存查表（避免逐户 getProgress 的 N+1 查询）
      *
      * 结构：
-     * 1. 全局统计头（总户数/已拍摄/未拍摄/照片总数/各类型张数），供 AI 直接引用回答进度类问题
-     * 2. 逐户明细：≤[DETAIL_LIMIT] 户全列；超出则列前 [DETAIL_LIMIT] 户，其余按地址概（区域）分组聚合，控制 token
+     * - 全局统计头（总户数/已拍摄/未拍摄/照片总数/各类型张数），供 AI 直接引用回答进度类问题
+     * - 逐户明细≤[DETAIL_LIMIT] 户全列；超出则列前 [DETAIL_LIMIT] 户，其余按地址概（区域）分组聚合，控制 token
      */
     private suspend fun buildContextSummary(): String {
         val rows = photoSessionHolder.rows
@@ -86,7 +86,7 @@ class ChatViewModel @Inject constructor(
         val totalPhotos = rows.sumOf { photoCount(it.progressKey) }
 
         // 各拍摄类型张数：优先 photoTypes（与 photos 平行的类型列表，张数精确）；
-        // 旧数据（v4.0.0）无 photoTypes 时无法逐张归类，回退记入「未分类」
+        // 记录缺 photoTypes 时无法逐张归类，回退记入「未分类」
         val typeCounts = LinkedHashMap<String, Int>()
         for (row in rows) {
             val record = progressMap[row.progressKey] ?: continue

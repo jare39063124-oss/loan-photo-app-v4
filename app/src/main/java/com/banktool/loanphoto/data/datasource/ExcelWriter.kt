@@ -15,14 +15,14 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Excel 写入数据源（备注回写 F 列）。
+ * Excel 写入数据源（备注回写 / 追加行 / 整行更新）。
  *
- * 使用 Apache POI [XSSFWorkbook] 打开 .xlsx，把行级备注写入 F 列（第 5 列，0-indexed）。
- *
+ * 使用 Apache POI [XSSFWorkbook] 打开 .xlsx：
  * - 通过 ContentResolver openInputStream 读取原文件
  * - 第 1 行作为表头（与 [ExcelDataSource] 对齐）
- * - 对每个有备注的行，写入 F 列 = 备注内容
- * - 原子写: 先写到内存 ByteArrayOutputStream，再通过 ContentResolver openOutputStream 覆盖原 URI
+ * - [writeRemarksToExcel]：对每个有备注的行，写入备注映射列（默认 F 列）
+ * - [appendRowToExcel]：在末尾追加查勘条目（默认 A/B/C 列）
+ * - [updateRowToExcel]：按列号 Map 更新指定行的任意列（编辑条目整行回写）
  *
  * @param uri Excel 文件 content URI
  * @param remarks key=行号（0-based，含表头时为 Excel 物理行号），value=备注内容
@@ -33,17 +33,16 @@ class ExcelWriter @Inject constructor(
 ) {
 
     /**
-     * 将备注回写到 Excel F 列。
+     * 将备注回写到 Excel 指定列（默认 F 列）。
      *
-     * 步骤：
-     * 1. 通过 ContentResolver 读取原 .xlsx
-     * 2. 读取第 1 行作为表头（识别 startRow）
-     * 3. 对每个 (rowIndex, remark) 写入 F 列
-     * 4. 通过 ContentResolver openOutputStream 原子覆盖
-     *
+     * @param remarkColumn 备注列号（0-indexed），按当前文件列映射传入（无映射默认 F=5）
      * @return true 写入成功；false 失败
      */
-    suspend fun writeRemarksToExcel(uri: Uri, remarks: Map<Int, String>): Boolean =
+    suspend fun writeRemarksToExcel(
+        uri: Uri,
+        remarks: Map<Int, String>,
+        remarkColumn: Int = COL_REMARK,
+    ): Boolean =
         withContext(Dispatchers.IO) {
             if (remarks.isEmpty()) {
                 Timber.w("ExcelWriter: remarks 为空，跳过写入")
@@ -52,7 +51,6 @@ class ExcelWriter @Inject constructor(
             try {
                 val resolver = context.contentResolver
 
-                // 1. 读取原工作簿
                 val workbook = resolver.openInputStream(uri)?.use { input ->
                     XSSFWorkbook(input)
                 } ?: run {
@@ -66,22 +64,21 @@ class ExcelWriter @Inject constructor(
                         return@withContext false
                     }
 
-                    // 2. 识别表头起始行（与 ExcelDataSource.parseHeader 对齐）
                     val startRow = detectDataStartRow(sheet)
 
-                    // 3. 写入备注到 F 列
                     var written = 0
                     for ((rowIndex, content) in remarks) {
                         if (content.isBlank()) continue
-                        // rowIndex 是 Excel 物理行号（含表头），直接用作 sheet 行号
                         val row = sheet.getRow(rowIndex) ?: sheet.createRow(rowIndex)
-                        val cell = row.getCell(COL_REMARK) ?: row.createCell(COL_REMARK)
+                        val cell = row.getCell(remarkColumn) ?: row.createCell(remarkColumn)
                         cell.setCellValue(content)
                         written++
                     }
-                    Timber.i("ExcelWriter: 写入 %d 条备注到 F 列, startRow=%d", written, startRow)
+                    Timber.i(
+                        "ExcelWriter: 写入 %d 条备注到第 %d 列, startRow=%d",
+                        written, remarkColumn, startRow,
+                    )
 
-                    // 4. 原子写：先序列化到内存，再覆盖 URI
                     val bytes = ByteArrayOutputStream().use { baos ->
                         wb.write(baos)
                         baos.toByteArray()
@@ -105,15 +102,27 @@ class ExcelWriter @Inject constructor(
     /**
      * 在 Excel 末尾追加一行查勘条目（不覆盖原有内容）。
      *
-     * 列映射：A=serial, B=borrower, C=address, D/E/F 留空。
+     * 默认列映射：A=serial, B=borrower, C=address，D/E/F 留空；
+     * 也可按当前文件列映射传入目标列号。
      *
      * @param uri Excel 文件 content URI
      * @param serial 序号
      * @param borrower 借款人
-     * @param address 地址（写入 C 列）
+     * @param address 地址
+     * @param serialColumn 序号列号（0-indexed，默认 A=0）
+     * @param borrowerColumn 借款人列号（默认 B=1）
+     * @param addressColumn 地址列号（默认 C=2）
      * @return 新行的物理行号（0-based，sheet 行号）；-1 表示失败
      */
-    suspend fun appendRowToExcel(uri: Uri, serial: String, borrower: String, address: String): Int =
+    suspend fun appendRowToExcel(
+        uri: Uri,
+        serial: String,
+        borrower: String,
+        address: String,
+        serialColumn: Int = 0,
+        borrowerColumn: Int = 1,
+        addressColumn: Int = 2,
+    ): Int =
         withContext(Dispatchers.IO) {
             try {
                 val resolver = context.contentResolver
@@ -130,16 +139,17 @@ class ExcelWriter @Inject constructor(
                         return@withContext -1
                     }
 
-                    // 在末尾追加一行（getLastRowNum 返回最后有数据的行号，0-based；新行 = lastRowNum + 1）
-                    // 注意：若 sheet 为空（lastRowNum=-1），新行=0；若有表头+数据，新行=lastRowNum+1
                     val newRowNum = sheet.lastRowNum + 1
                     val newRow = sheet.createRow(newRowNum)
-                    newRow.createCell(0).setCellValue(serial) // A 列 序号
-                    newRow.createCell(1).setCellValue(borrower) // B 列 借款人
-                    newRow.createCell(2).setCellValue(address) // C 列 地址概
-                    // D/E/F 列不创建（留空）
+                    newRow.createCell(serialColumn).setCellValue(serial) // 序号
+                    newRow.createCell(borrowerColumn).setCellValue(borrower) // 借款人
+                    newRow.createCell(addressColumn).setCellValue(address) // 地址概
+                    // 其余列不创建（留空）
 
-                    Timber.i("ExcelWriter appendRow: 追加行 #%d, serial=%s, borrower=%s", newRowNum, serial, borrower)
+                    Timber.i(
+                        "ExcelWriter appendRow: 追加行 #%d, serial@%d=%s, borrower@%d=%s",
+                        newRowNum, serialColumn, serial, borrowerColumn, borrower,
+                    )
 
                     // 原子写
                     val bytes = ByteArrayOutputStream().use { baos ->
@@ -202,7 +212,6 @@ class ExcelWriter @Inject constructor(
                     }
                     Timber.i("ExcelWriter updateRow: 更新行 #%d, %d 列", rowIndex, values.size)
 
-                    // 原子写：先序列化到内存，再覆盖 URI
                     val bytes = ByteArrayOutputStream().use { baos ->
                         wb.write(baos)
                         baos.toByteArray()

@@ -82,7 +82,6 @@ object CrashLogger {
             } catch (_: Throwable) {
                 // 绝不再抛
             }
-            // 委托默认 handler 让进程正常退出（弹 FC 框）
             defaultHandler?.uncaughtException(t, e)
         }
 
@@ -101,7 +100,6 @@ object CrashLogger {
                 val code = info.versionCode
                 "$name(vc=$code)"
             } catch (_: Throwable) {
-                // 崩溃处理器内部静默：不可再触发任何可能失败的调用
                 ""
             }
         }

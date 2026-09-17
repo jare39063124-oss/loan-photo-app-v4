@@ -1,7 +1,7 @@
 # 资产盘点拍照工具 v4.0
 
 > 抚顺银行风险管理部 — 抵押物现场拍照取证工具
-> 从 Kivy v3.22.24 重写为原生 Android (Kotlin + Jetpack Compose + CameraX)
+> 原生 Android 实现（Kotlin + Jetpack Compose + CameraX）
 
 ## 项目信息
 
@@ -9,8 +9,6 @@
 - **minSdk**: 24 (Android 7.0)
 - **targetSdk**: 35 (Android 15)
 - **架构**: Clean Architecture + MVVM + Hilt
-- **来源**: 从 `loan-photo-app` (Kivy v3.22.24) 重写
-- **交接文档**: `C:\Users\Administrator\Desktop\loan-photo-app-flutter-rewrite-handover.md`
 
 ## 技术栈
 
@@ -56,7 +54,7 @@
 
 ## 数据兼容性
 
-本版本完全兼容 Kivy v3.22.24 生成的数据：
+与既有现场数据格式完全兼容：
 - `progress.json` — 拍照进度
 - `excel_data_index.json` — Excel 数据索引
 - `camera_session.json` — 相机会话

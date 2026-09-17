@@ -4,7 +4,7 @@ import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 
 /**
- * progress.json 中单个 progressKey 对应的条目（兼容 Kivy v3.22.24）。
+ * progress.json 中单个 progressKey 对应的条目。
  *
  * JSON 形态：
  * ```json
@@ -17,9 +17,9 @@ import com.squareup.moshi.JsonClass
  * }
  * ```
  *
- * - `types`: 已拍摄分类的集合（presence，Kivy 兼容，保留）
- * - `photo_types`: 与 `photos` 平行的类型列表（v4.0.1 新增，同索引对应同照片的类型），
- *   用于精确计算各分类张数。旧数据（v4.0.0）无此字段时默认空列表，回退到 types presence。
+ * - `types`: 已拍摄分类的集合（presence 形式）
+ * - `photo_types`: 与 `photos` 平行的类型列表（同索引对应同照片的类型），
+ *   用于精确计算各分类张数。字段缺失时默认空列表，回退到 types presence。
  *
  * 顶层文件还包含两个特殊键：
  * - `_row_remarks`: Map<String, String>（key=行号字符串）
@@ -42,7 +42,7 @@ data class ProgressEntryDto(
  * progress.json 顶层文件结构（逻辑视图，非直接序列化）。
  *
  * [entries] 的 key 为 progressKey（16 位 hex）。
- * 实际读写时由 Repository 拆分为 Kivy 兼容的扁平 Map：
+ * 实际读写时由 Repository 拆分为扁平 Map：
  * { "_row_remarks": {...}, "batch_marked": {...}, "<key>": ProgressEntryDto, ... }
  */
 data class ProgressFileDto(

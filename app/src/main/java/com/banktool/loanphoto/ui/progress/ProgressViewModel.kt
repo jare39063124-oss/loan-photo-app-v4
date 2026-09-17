@@ -2,6 +2,7 @@ package com.banktool.loanphoto.ui.progress
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.banktool.loanphoto.data.datasource.ColumnField
 import com.banktool.loanphoto.data.datasource.ExcelWriter
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.repository.ExcelDataIndexRepository
@@ -33,14 +34,9 @@ data class ProgressItem(
 )
 
 /**
- * 进度查看界面 ViewModel。
- *
- * 职责：
- * 1. 加载当前 Excel 所有客户及拍照进度
- * 2. 提供顶部统计（总客户数 / 已拍摄数 / 待拍摄数）
- * 3. 导出备注到 Excel F 列
- * 4. 清除数据（缩略图 + 进度 + 备注 + 索引）
- * 5. 走访备注保存
+ * 进度查看界面 ViewModel：加载当前 Excel 所有客户及拍照进度、提供顶部统计
+ * （总客户数 / 已拍摄数 / 待拍摄数）、导出备注到 Excel F 列、
+ * 清除数据（缩略图 + 进度 + 备注 + 索引）、保存走访备注。
  */
 @HiltViewModel
 class ProgressViewModel @Inject constructor(
@@ -58,6 +54,7 @@ class ProgressViewModel @Inject constructor(
         val excelUri: String = "",
         val excelFileName: String = "",
         val excelUriMd5: String = "",
+        val resolvedColumnMap: List<ColumnField> = ColumnField.DEFAULT,
         val totalCount: Int = 0,
         val visitedCount: Int = 0,
         val pendingCount: Int = 0,
@@ -73,17 +70,31 @@ class ProgressViewModel @Inject constructor(
 
     /**
      * 加载某 Excel 的进度数据。
+     *
+     * 若该文件已有持久化列映射（客户清单页确认过），注入解析保证字段语义一致；
+     * 否则按表头探测/默认 A-F 解析。
      */
     fun loadProgress(excelUri: String, fileName: String = "") {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
             try {
-                val rows = excelRepository.readExcel(excelUri)
                 val md5 = ProgressKeyUtil.excelUriMd5(excelUri)
+                val savedMap = excelDataIndexRepository.getColumnMap(md5)
+                val result = if (savedMap != null) {
+                    val skipFirstRow = excelDataIndexRepository.hasHeaderRow(md5)
+                    Timber.i(
+                        "loadProgress: 使用持久化列映射 %s, skipFirstRow=%s, uriMd5=%s",
+                        savedMap, skipFirstRow, md5,
+                    )
+                    excelRepository.readExcel(excelUri, savedMap, skipFirstRow)
+                } else {
+                    excelRepository.readExcel(excelUri)
+                }
+                val rows = result.rows
 
                 val allProgress = progressRepository.getAllProgress()
                 val batchMarked = progressRepository.getBatchMarkedKeys()
-                val remarks = progressRepository.getRowRemarks()
+                val remarks = progressRepository.getRowRemarks(md5)
 
                 val items = withContext(Dispatchers.Default) {
                     rows
@@ -113,6 +124,7 @@ class ProgressViewModel @Inject constructor(
                         excelUri = excelUri,
                         excelFileName = fileName.ifBlank { "未知文件" },
                         excelUriMd5 = md5,
+                        resolvedColumnMap = result.resolvedColumnMap,
                         totalCount = items.size,
                         visitedCount = visited,
                         pendingCount = items.size - visited,
@@ -133,14 +145,20 @@ class ProgressViewModel @Inject constructor(
     }
 
     /**
-     * 导出备注到 Excel F 列。
+     * 导出备注到 Excel 备注映射列（默认 F 列）。
      *
      * 收集所有有备注的行（rowIndex -> remark），调用 ExcelWriter 写回原 URI。
+     * 备注列号取当前文件 resolvedColumnMap 中 REMARK 对应列；无备注列时报错提示。
      */
     fun exportRemarksToExcel() {
         val current = _uiState.value
         if (current.excelUri.isBlank()) {
             _uiState.update { it.copy(error = "未加载 Excel 文件") }
+            return
+        }
+        val remarkColumn = current.resolvedColumnMap.indexOf(ColumnField.REMARK)
+        if (remarkColumn < 0) {
+            _uiState.update { it.copy(error = "当前列映射中没有备注列，无法导出") }
             return
         }
         viewModelScope.launch {
@@ -158,7 +176,7 @@ class ProgressViewModel @Inject constructor(
                 }
 
                 val uri = android.net.Uri.parse(current.excelUri)
-                val success = excelWriter.writeRemarksToExcel(uri, remarksMap)
+                val success = excelWriter.writeRemarksToExcel(uri, remarksMap, remarkColumn)
                 _uiState.update {
                     it.copy(
                         isExporting = false,
@@ -175,12 +193,8 @@ class ProgressViewModel @Inject constructor(
     }
 
     /**
-     * 清除当前 Excel 的所有数据。
-     *
-     * 1. 清除 thumbnails/<progress_key>/ 目录
-     * 2. 清除 progress.json 中对应 progress_keys
-     * 3. 更新 excel_data_index.json (移除该 excel_uri_md5 条目)
-     * 4. 清除 _row_remarks 中对应行号
+     * 清除当前 Excel 的所有数据：缩略图与原图目录、progress.json 中对应 keys
+     * （含 batch_marked 引用）、_row_remarks 对应行号，并移除 excel_data_index.json 条目。
      */
     fun clearData() {
         val current = _uiState.value
@@ -193,15 +207,14 @@ class ProgressViewModel @Inject constructor(
             try {
                 val md5 = current.excelUriMd5
                 var progressKeys = excelDataIndexRepository.getProgressKeys(md5)
-                // 兜底：如果索引为空（addProgressKey 历史未调用或索引丢失），
-                // 直接扫描 progress.json 全量 keys，避免 clearData 静默失效。
+                // 索引为空说明该文件此前从未登记或索引已丢失，
+                // 此时回退为按持久化数据全量扫描，避免清除操作静默失效。
                 if (progressKeys.isEmpty()) {
                     progressKeys = progressRepository.getAllProgressKeys()
                     Timber.w("excel_data_index 为空，使用 progress.json 全量 keys 兜底: %d", progressKeys.size)
                 }
                 val rowIndexes = current.items.map { it.row.rowIndex }
 
-                // 1. 清除缩略图目录
                 val thumbRoot = File(context.getExternalFilesDir(null), "thumbnails")
                 for (key in progressKeys) {
                     val dir = File(thumbRoot, key)
@@ -210,7 +223,6 @@ class ProgressViewModel @Inject constructor(
                     }
                 }
 
-                // 1.5 清除 photos 原图目录（原图存于 photos/<progressKey>/，需一并清理）
                 val photosRoot = File(context.getExternalFilesDir(null), "photos")
                 for (key in progressKeys) {
                     val dir = File(photosRoot, key)
@@ -219,13 +231,10 @@ class ProgressViewModel @Inject constructor(
                     }
                 }
 
-                // 2. 清除 progress.json 中对应 keys（同时清除 batch_marked 中的引用）
                 progressRepository.removeProgressKeys(progressKeys)
 
-                // 3. 清除 _row_remarks 中对应行号
-                progressRepository.removeRowRemarks(rowIndexes)
+                progressRepository.removeRowRemarks(md5, rowIndexes)
 
-                // 4. 更新 excel_data_index.json
                 excelDataIndexRepository.removeExcelData(md5)
 
                 _uiState.update {

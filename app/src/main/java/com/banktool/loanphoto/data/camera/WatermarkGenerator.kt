@@ -9,18 +9,57 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.Typeface
 import androidx.exifinterface.media.ExifInterface
+import com.banktool.loanphoto.domain.entity.CustomerRow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * 水印段内容来源。
+ *
+ * @param displayName 设置页下拉选项展示名
+ */
+enum class WatermarkSource(val displayName: String) {
+    DATE("拍摄日期"),
+    SERIAL("序号"),
+    BORROWER("客户名"),
+    ADDRESS("地址"),
+    PROPERTY_TYPE("性质"),
+    REMARK("备注"),
+    LATLNG("经纬度"),
+    CUSTOM("自定义"),
+    OFF("关闭"),
+}
+
+/**
+ * 单个水印段（槽位）的配置。
+ *
+ * @param source 内容来源
+ * @param customText [WatermarkSource.CUSTOM] 段的自定义文本（其它来源忽略）
+ */
+data class WatermarkSegmentSetting(
+    val source: WatermarkSource,
+    val customText: String = "",
+)
+
+/** 默认段配置（4 槽 = 拍摄日期 / 序号 / 地址 / 经纬度，兼容旧 4 开关全 true 行为）。 */
+fun defaultWatermarkSegmentSettings(): List<WatermarkSegmentSetting> = listOf(
+    WatermarkSegmentSetting(WatermarkSource.DATE),
+    WatermarkSegmentSetting(WatermarkSource.SERIAL),
+    WatermarkSegmentSetting(WatermarkSource.ADDRESS),
+    WatermarkSegmentSetting(WatermarkSource.LATLNG),
+)
 
 /**
  * 水印位置。
@@ -70,6 +109,20 @@ data class WatermarkConfig(
     val showSerial: Boolean = true,
     val showAddress: Boolean = true,
     val showLatlng: Boolean = true,
+    /**
+     * 4 槽段配置（槽位顺序即绘制顺序）。
+     *
+     * - 非 null：新段配置化路径，由 [WatermarkGenerator.buildSegments] 按槽位生成行内容
+     * - null：旧 4 开关路径（兼容，[showDate]/[showSerial]/[showAddress]/[showLatlng] 生效）
+     */
+    val segmentSettings: List<WatermarkSegmentSetting>? = null,
+    /**
+     * 槽位行（slotIndex to line），与 [segmentSettings] 非 null 路径配套。
+     *
+     * 由调用方通过 [WatermarkGenerator.buildSegments] 生成后填入；会话级覆盖按
+     * `slot_N` key 替换对应槽位行文本。null 时 [segments] 即最终绘制行。
+     */
+    val slotLines: List<Pair<Int, String>>? = null,
 )
 
 /**
@@ -78,7 +131,9 @@ data class WatermarkConfig(
  *
  * 字号自适应：scale = bitmap.width / 1080f，最终 fontSize = max(24, baseSize * scale)。
  *
- * 3 段内容约定：拍摄时间（日期）/ 地址名 / 经纬度。
+ * 水印内容：由 [WatermarkConfig.segmentSettings] 段配置（4 槽，见 [buildSegments]）在拍照时
+ * 实时构建；[WatermarkConfig.segmentSettings] 为 null 时回退旧 4 开关路径。
+ * 会话级文本覆盖按 `slot_N` key 替换对应槽位行。
  */
 @Singleton
 class WatermarkGenerator @Inject constructor() {
@@ -121,7 +176,6 @@ class WatermarkGenerator @Inject constructor() {
             color = Color.BLACK
         }
 
-        // 自适应字号：初始按档位缩放，若水印块超当前档位最大占宽（fontSize.maxBlockWidthRatio）则循环缩小字号直至适配
         var fontPx = (fontSize.sizePx * scale).toInt().coerceAtLeast(MIN_FONT_PX)
         var maxTextWidth: Int
         var blockWidth: Int
@@ -187,8 +241,8 @@ class WatermarkGenerator @Inject constructor() {
      * @param location 位置结果；为 null 时跳过 GPS EXIF 写入（仅复制原 EXIF）
      * @param config 水印配置
      * @param photoQuality 照片质量等级（缩放最长边上限，默认 [PhotoQuality.HIGH]）
-     * @param overrides 水印文本行覆盖（key: "date"/"serial"/"address"/"latlng"），
-     *        绘制前按行内容特征识别并替换对应段；空值/空 map 不替换（默认行为不变）
+     * @param overrides 水印文本行覆盖（key: `"slot_N"`，N 为槽位索引 0..3，value 为替换行文本），
+     *        仅在 [WatermarkConfig.slotLines] 非 null（新段配置化路径）时生效；空白值不替换
      * @return 输出文件路径（成功时与 outputPath 相同）
      */
     suspend fun drawAndSave(
@@ -209,7 +263,6 @@ class WatermarkGenerator @Inject constructor() {
             // 目标最长边（HIGH=1920 / MEDIUM=1280 / LOW=640），后续降采样与精确缩放均以此为基准
             val targetLongestEdge = photoQuality.maxEdge
 
-            // 1. 仅读取原图尺寸（inJustDecodeBounds 不分配像素内存），用于计算 inSampleSize
             val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(sourcePath, boundsOpts)
             val srcWidth = boundsOpts.outWidth
@@ -219,10 +272,8 @@ class WatermarkGenerator @Inject constructor() {
                 return@withContext null
             }
 
-            // 2. 计算 inSampleSize（2 的幂次），使解码后最长边 >= targetLongestEdge（约目标的 1~2 倍）
             val sampleSize = calculateInSampleSize(srcWidth, srcHeight, targetLongestEdge)
 
-            // 3. 降采样解码：相比全分辨率（可能 48MP）大幅减少像素量，是性能优化的核心步骤
             val decodeOpts = BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.ARGB_8888
                 inSampleSize = sampleSize
@@ -232,7 +283,6 @@ class WatermarkGenerator @Inject constructor() {
                 return@withContext null
             }
 
-            // 4. 按源文件 EXIF 方向旋转（烘焙进像素），确保水印正向绘制；EXIF 从源文件读取以保留原方向信息
             val orientation = runCatching {
                 ExifInterface(sourcePath).getAttributeInt(
                     ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL,
@@ -244,8 +294,6 @@ class WatermarkGenerator @Inject constructor() {
             Timber.d("WatermarkGen after rotate oriented=%dx%d (rotated=%s)",
                 oriented.width, oriented.height, oriented !== decodedBitmap)
 
-            // 5. 精确缩放到目标尺寸（不放大）：旋转后宽高可能互换，故以 oriented 实际宽高计算
-            //    在已降采样的位图上缩放，远比在全分辨率位图上缩放省时省内存
             val longestEdge = maxOf(oriented.width, oriented.height)
             val scaledBitmap = if (longestEdge > targetLongestEdge) {
                 val scale = targetLongestEdge.toFloat() / longestEdge
@@ -259,13 +307,10 @@ class WatermarkGenerator @Inject constructor() {
                 oriented
             }
 
-            // 6. 在已缩放位图上绘制水印：drawWatermark 基于 bitmap.width 自适应字号/位置，
-            //    故在 1920px 上绘制的视觉效果与「全分辨率绘制再缩到 1920px」一致或更优，
-            //    且 maxBlockWidthRatio（25%/20%/15%）按已缩放宽度生效，行为与 v4.1.4 保持一致
             val finalBitmap = if (config.enabled) {
                 drawWatermark(
                     bitmap = scaledBitmap,
-                    segments = applySegmentOverrides(config.segments, overrides),
+                    segments = applySlotOverrides(config, overrides),
                     position = config.position,
                     fontSize = config.fontSize,
                     opacity = config.opacity,
@@ -284,15 +329,12 @@ class WatermarkGenerator @Inject constructor() {
                 finalBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, fos)
                 fos.flush()
             }
-            // 回收中间位图链：decodedBitmap → oriented → scaledBitmap → finalBitmap
-            // 每个对象仅回收一次（链中相同时跳过，避免 double-recycle / 内存泄漏）
             // drawWatermark 内部 copy 出新位图，故 finalBitmap 通常 != scaledBitmap，scaledBitmap 仍需回收
             if (oriented !== decodedBitmap) decodedBitmap.recycle()
             if (scaledBitmap !== oriented) oriented.recycle()
             if (finalBitmap !== scaledBitmap) scaledBitmap.recycle()
             finalBitmap.recycle()
 
-            // 写入 GPS EXIF（保留原 EXIF + 追加 GPS；location=null 时跳过 GPS）
             writeGpsExif(outFile.absolutePath, sourcePath, location)
 
             outFile.absolutePath
@@ -300,6 +342,71 @@ class WatermarkGenerator @Inject constructor() {
             Timber.e(e, "WatermarkGenerator drawAndSave 失败")
             null
         }
+    }
+
+    /**
+     * 构造水印段内容（段配置化主路径）。
+     *
+     * - [WatermarkConfig.segmentSettings] 非 null：按槽位顺序生成 `slotIndex to line`，
+     *   OFF / 空数据段（序号空白、客户名空白、自定义文本空白等）跳过不生成
+     * - 为 null：回退旧 4 开关逻辑（见带开关重载），行按生成顺序以 0..n-1 占位索引返回
+     *   （回退路径无真实槽位语义，会话级覆盖不生效）
+     *
+     * 段取值规则（settings 非空时）：
+     * - DATE → `yyyy年MM月dd日`（按 [captureTimeMillis]）
+     * - SERIAL → 序号原值（无前缀；空白跳过）
+     * - BORROWER → row.borrower（空白跳过）
+     * - ADDRESS → 定位成功显示位置地址（空白回退「未知位置」），失败显示「定位失败」
+     * - PROPERTY_TYPE / REMARK → 对应字段（空白跳过）
+     * - LATLNG → `%.6f,%.6f` 或「定位失败」
+     * - CUSTOM → customText（空白跳过）
+     * - OFF → 跳过
+     *
+     * @param config 水印配置（segmentSettings 决定走新段配置路径还是旧开关路径）
+     * @param captureTimeMillis 拍照时间毫秒（DATE 段取值来源）
+     * @param location 位置结果；为 null 时 ADDRESS/LATLNG 段显示「定位失败」
+     * @param row 当前主客户行（SERIAL/BORROWER/PROPERTY_TYPE/REMARK 段取值来源，可为 null）
+     * @return 槽位索引 to 行文本；全部段跳过时返回 emptyList()（调用方据此不绘制水印块）
+     */
+    fun buildSegments(
+        config: WatermarkConfig,
+        captureTimeMillis: Long,
+        location: LocationResult?,
+        row: CustomerRow?,
+    ): List<Pair<Int, String>> {
+        val settings = config.segmentSettings ?: return buildSegments(
+            captureTimeMillis,
+            location,
+            row?.serial?.takeIf { it.isNotBlank() },
+            config.showDate,
+            config.showSerial,
+            config.showAddress,
+            config.showLatlng,
+        ).mapIndexed { index, line -> index to line }
+
+        val dateText = Instant.ofEpochMilli(captureTimeMillis)
+            .atZone(ZoneId.systemDefault())
+            .format(dateFormatter)
+        val lines = mutableListOf<Pair<Int, String>>()
+        settings.forEachIndexed { index, setting ->
+            val line = when (setting.source) {
+                WatermarkSource.DATE -> dateText
+                WatermarkSource.SERIAL -> row?.serial?.takeIf { it.isNotBlank() } ?: return@forEachIndexed
+                WatermarkSource.BORROWER -> row?.borrower?.takeIf { it.isNotBlank() } ?: return@forEachIndexed
+                WatermarkSource.ADDRESS -> location?.address?.ifBlank { "未知位置" } ?: "定位失败"
+                WatermarkSource.PROPERTY_TYPE -> row?.propertyType?.takeIf { it.isNotBlank() } ?: return@forEachIndexed
+                WatermarkSource.REMARK -> row?.remark?.takeIf { it.isNotBlank() } ?: return@forEachIndexed
+                WatermarkSource.LATLNG -> if (location != null) {
+                    "%.6f,%.6f".format(Locale.US, location.lat, location.lng)
+                } else {
+                    "定位失败"
+                }
+                WatermarkSource.CUSTOM -> setting.customText.trim().takeIf { it.isNotEmpty() } ?: return@forEachIndexed
+                WatermarkSource.OFF -> return@forEachIndexed
+            }
+            lines += index to line
+        }
+        return lines
     }
 
     /**
@@ -359,32 +466,20 @@ class WatermarkGenerator @Inject constructor() {
     }
 
     /**
-     * 按行内容特征识别水印段并应用 [overrides] 覆盖（绘制前单次应用）。
+     * 按槽位 key 应用会话级覆盖（绘制前单次应用）。
      *
-     * 段识别依据 [buildSegments] 的确定性输出格式：
-     * - 日期段：`yyyy年MM月dd日` → key "date"
-     * - 序号段：以「序号:」开头 → key "serial"（覆盖值不带前缀时自动补「序号:」）
-     * - 经纬度段：`lat,lng`（各 6 位小数）→ key "latlng"
-     * - 其余行视为地址段 → key "address"（buildSegments 每类只输出一行）
-     *
-     * override 值为空白时不覆盖；overrides 为空时原样返回（现有调用行为不变）。
+     * [WatermarkConfig.slotLines] 非 null（新段配置化路径）时，`overrides["slot_N"]`
+     * （N 为槽位索引，值非空白）替换对应槽位行文本；为 null（旧 4 开关路径）时
+     * 忽略 overrides，直接返回 [WatermarkConfig.segments]。
      */
-    private fun applySegmentOverrides(
-        segments: List<String>,
+    private fun applySlotOverrides(
+        config: WatermarkConfig,
         overrides: Map<String, String>,
     ): List<String> {
-        if (overrides.isEmpty() || segments.isEmpty()) return segments
-        fun overrideOf(key: String): String? =
-            overrides[key]?.takeIf { it.isNotBlank() }
-        return segments.map { line ->
-            when {
-                DATE_SEGMENT_REGEX.matches(line) -> overrideOf("date") ?: line
-                line.startsWith(SERIAL_PREFIX) -> overrideOf("serial")?.let {
-                    if (it.startsWith(SERIAL_PREFIX)) it else "$SERIAL_PREFIX$it"
-                } ?: line
-                LATLNG_SEGMENT_REGEX.matches(line) -> overrideOf("latlng") ?: line
-                else -> overrideOf("address") ?: line
-            }
+        val slotLines = config.slotLines ?: return config.segments
+        if (overrides.isEmpty()) return slotLines.map { it.second }
+        return slotLines.map { (slot, line) ->
+            overrides["slot_$slot"]?.takeIf { it.isNotBlank() } ?: line
         }
     }
 
@@ -425,7 +520,6 @@ class WatermarkGenerator @Inject constructor() {
         val longestEdge = maxOf(srcWidth, srcHeight)
         if (longestEdge <= targetLongestEdge) return 1
         var sampleSize = 1
-        // 再翻倍后仍 >= 目标才继续，确保退出时 longestEdge/sampleSize >= targetLongestEdge
         while (longestEdge / (sampleSize * 2) >= targetLongestEdge) {
             sampleSize *= 2
         }
@@ -446,7 +540,6 @@ class WatermarkGenerator @Inject constructor() {
             val sourceExif = runCatching { ExifInterface(sourcePath) }.getOrNull()
             val targetExif = ExifInterface(targetPath)
 
-            // 复制原始 EXIF（设备等；方向不复制，已烘焙进像素）
             if (sourceExif != null) {
                 val tags = listOf(
                     ExifInterface.TAG_MAKE,
@@ -460,11 +553,9 @@ class WatermarkGenerator @Inject constructor() {
                         targetExif.setAttribute(tag, value)
                     }
                 }
-                // 旋转已烘焙进像素，输出方向置 NORMAL（不复制源方向标签）
                 targetExif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
             }
 
-            // GPS 经纬度（location 为 null 时跳过 GPS 写入）
             if (location != null) {
                 targetExif.setLatLong(location.lat, location.lng)
                 targetExif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE, "0")
@@ -489,8 +580,6 @@ class WatermarkGenerator @Inject constructor() {
         const val BG_OPACITY_RATIO = 0.55f
         const val JPEG_QUALITY = 92
         const val EDGE_MARGIN_RATIO = 0.03f // 水印距图片边缘 3% 空隙
-        const val SERIAL_PREFIX = "序号:"
-        val DATE_SEGMENT_REGEX = Regex("""^\d{4}年\d{1,2}月\d{1,2}日$""")
-        val LATLNG_SEGMENT_REGEX = Regex("""^-?\d{1,3}\.\d+,-?\d{1,3}\.\d+$""")
+        const val SERIAL_PREFIX = "序号:" // 旧 4 开关路径序号段前缀
     }
 }

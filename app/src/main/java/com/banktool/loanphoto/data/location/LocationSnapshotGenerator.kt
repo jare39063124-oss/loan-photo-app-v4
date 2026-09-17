@@ -34,9 +34,8 @@ import kotlin.math.tan
 /**
  * 定位截图生成器：首拍时为指定客户行生成 3 张不同比例尺（z=15/16/17）的地图定位截图。
  *
- * 瓦片源两级回退：
- * 1. 高德免 key 瓦片（wprd01~04 轮询，style=7 矢量路网），坐标需 WGS84 → GCJ02 转换
- * 2. OSM 瓦片（User-Agent: LoanPhotoApp/4.2），使用原始 WGS84 坐标
+ * 瓦片源两级回退：高德免 key 瓦片（wprd01~04 轮询，style=7 矢量路网）坐标需 WGS84 → GCJ02 转换；
+ * OSM 瓦片（User-Agent: LoanPhotoApp/4.2）使用原始 WGS84 坐标。
  *
  * 每级整级任一瓦片下载失败即回退下一源；两级都失败抛异常，由调用方静默处理。
  *
@@ -88,7 +87,6 @@ class LocationSnapshotGenerator @Inject constructor(
      * 渲染单个缩放级：高德优先，任一瓦片失败整级回退 OSM；两级都失败抛异常。
      */
     private fun renderZoomLevel(row: CustomerRow, lat: Double, lng: Double, z: Int): Bitmap {
-        // 高德使用 GCJ02 坐标
         val (gcjLat, gcjLng) = wgs84ToGcj02(lat, lng)
         try {
             return composeTiles(row, gcjLat, gcjLng, z, useAmap = true, wgsLat = lat, wgsLng = lng)
@@ -143,7 +141,6 @@ class LocationSnapshotGenerator @Inject constructor(
             }
         }
 
-        // 中心（拍照点）精确像素：中心瓦片起点 256px + 瓦片内小数偏移
         val cx = (TILE_SIZE + (xf - xt) * TILE_SIZE).toFloat()
         val cy = (TILE_SIZE + (yf - yt) * TILE_SIZE).toFloat()
         drawCenterMarker(canvas, cx, cy)
@@ -161,7 +158,6 @@ class LocationSnapshotGenerator @Inject constructor(
         }
         val requestBuilder = Request.Builder().url(url).get()
         if (!useAmap) {
-            // OSM 瓦片政策要求自定义 User-Agent
             requestBuilder.header("User-Agent", OSM_USER_AGENT)
         }
         return try {
@@ -193,7 +189,6 @@ class LocationSnapshotGenerator @Inject constructor(
             style = Paint.Style.STROKE
             strokeWidth = 3f
         }
-        // 十字线（超出圆圈，长度 r+18）
         val arm = MARKER_RADIUS + 18f
         canvas.drawLine(cx - arm, cy, cx - MARKER_RADIUS * 0.4f, cy, crossPaint)
         canvas.drawLine(cx + MARKER_RADIUS * 0.4f, cy, cx + arm, cy, crossPaint)
@@ -270,8 +265,6 @@ class LocationSnapshotGenerator @Inject constructor(
     /** 文件名非法字符替换为 `_`（参照 NamingRuleGenerator.sanitize）。 */
     private fun sanitize(name: String): String =
         name.replace(Regex("[/\\\\:*?\"<>|]"), "_")
-
-    // ---- WGS84 → GCJ02（国测局标准算法） ----
 
     private fun wgs84ToGcj02(lat: Double, lng: Double): Pair<Double, Double> {
         // 中国境外无偏移，直接返回原坐标

@@ -60,11 +60,10 @@ enum class ExportFormat(val displayName: String, val ext: String) {
  *
  * 关键词为空时返回全集。
  *
- * 照片文件获取（参见 [collectPhotos]）：
- * 1. 优先读取 [ProgressRepository.getProgress] 返回的 [com.banktool.loanphoto.domain.entity.PhotoRecord.photos]
- *    （progress.json 中记录的绝对路径列表）。
- * 2. 若 progress.json 不可用或为空，扫描 `getExternalFilesDir/photos/<progressKey>/` 子目录。
- * 3. 再退化为按文件名匹配（包含客户 serial 或 borrower）。
+ * 照片文件获取（参见 [collectPhotos]）：优先读取 [ProgressRepository.getProgress] 返回的
+ * [com.banktool.loanphoto.domain.entity.PhotoRecord.photos]（progress.json 中记录的绝对路径列表）；
+ * 不可用或为空时扫描 `getExternalFilesDir/photos/<progressKey>/` 子目录；
+ * 再退化为按文件名匹配（包含客户 serial 或 borrower）。
  *
  * 输出路径：`getExternalFilesDir/reports/导出_<关键字>_<时间戳>.<ext>`
  */
@@ -166,10 +165,8 @@ class PhotoExporter @Inject constructor(
     /**
      * 收集匹配客户行对应的照片文件。
      *
-     * 三级回退：
-     * 1. [ProgressRepository.getProgress] 返回的 photos 绝对路径列表
-     * 2. `photos/<progressKey>/` 目录扫描
-     * 3. `photos/` 全目录按文件名匹配 serial / borrower
+     * 三级回退：[ProgressRepository.getProgress] 返回的 photos 绝对路径列表、
+     * `photos/<progressKey>/` 目录扫描、`photos/` 全目录按文件名匹配 serial / borrower。
      *
      * 同一文件不会被重复加入（按 absolutePath 去重）。
      */
@@ -182,7 +179,6 @@ class PhotoExporter @Inject constructor(
         val result = ArrayList<File>()
 
         for (row in rows) {
-            // 1. progress.json
             val record = runCatching { progressRepository.getProgress(row.progressKey) }.getOrNull()
             record?.photos
                 ?.asSequence()
@@ -195,7 +191,6 @@ class PhotoExporter @Inject constructor(
                 continue
             }
 
-            // 2. photos/<progressKey>/ 目录
             val keyDir = photosRoot?.let { File(it, row.progressKey) }
             if (keyDir != null && keyDir.exists()) {
                 keyDir.listFiles { f -> f.isFile && f.extension.isImageExt() }
@@ -203,7 +198,6 @@ class PhotoExporter @Inject constructor(
                     ?.forEach { addIfNew(seen, result, it) }
             }
 
-            // 3. 文件名匹配 serial / borrower
             if (photosRoot != null && photosRoot.exists()) {
                 val serial = row.serial.trim()
                 val borrower = row.borrower.trim()

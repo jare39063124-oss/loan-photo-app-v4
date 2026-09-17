@@ -14,7 +14,6 @@ import com.banktool.loanphoto.data.camera.LocationResult
 import com.banktool.loanphoto.data.camera.LocationService
 import com.banktool.loanphoto.data.camera.PhotoQuality
 import com.banktool.loanphoto.data.camera.ThumbnailGenerator
-import com.banktool.loanphoto.data.camera.WatermarkConfig
 import com.banktool.loanphoto.data.camera.WatermarkGenerator
 import com.banktool.loanphoto.data.location.LocationSnapshotGenerator
 import com.banktool.loanphoto.data.naming.NamingConfigRepository
@@ -48,9 +47,6 @@ import java.util.Locale
 import java.util.concurrent.Executor
 import javax.inject.Inject
 
-/**
- * 相机界面 UI 状态。
- */
 data class CameraUiState(
     val currentPhotoType: String = PhotoType.DISTANT.displayName,
     val primaryRow: CustomerRow? = null,
@@ -84,17 +80,10 @@ data class CameraUiState(
 )
 
 /**
- * 相机 ViewModel。
- *
- * 职责：
- * 1. 持有 [CameraEngine]（由 Hilt 在运行时按机型注入：HUAWEI/HONOR=Camera2CameraEngine，其余=CameraxCameraEngine）
- * 2. 维护当前拍照类型 displayName（[CameraUiState.currentPhotoType]，字符串，支持用户自定义类型）、
- *    主 [CustomerRow]、多选 [CustomerRow] 列表
- * 3. 拍照触发：engine.captureToFile -> 落盘 -> 水印 -> 缩略图 -> markPhoto/markPhotoBatch
- * 4. 持久化 [CameraSession]（拍照前 save，完成或退出后 clear）
- * 5. 多选计数：主 key 走 [ProgressRepository.markPhoto]，其余走 [ProgressRepository.markPhotoBatch]
- *
- * 拍照流程详见 [takePhoto]。
+ * 相机 ViewModel：持有 [CameraEngine]（由 Hilt 按机型注入：HUAWEI/HONOR=Camera2CameraEngine，
+ * 其余=CameraxCameraEngine），负责拍照触发与后处理、[CameraSession] 持久化（拍照前 save，
+ * 完成或退出后 clear）与多选计数（主 key 走 [ProgressRepository.markPhoto]，其余走
+ * [ProgressRepository.markPhotoBatch]）。拍照流程详见 [takePhoto]。
  */
 @HiltViewModel
 class CameraViewModel @Inject constructor(
@@ -116,7 +105,7 @@ class CameraViewModel @Inject constructor(
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
 
     /**
-     * 会话级水印文本覆盖（key: "date"/"serial"/"address"/"latlng"）。
+     * 会话级水印文本覆盖（key: `"slot_N"`，N 为水印槽位索引 0..3，value 为替换该槽位的行文本）。
      *
      * - 仅在本 ViewModel 生命周期内生效（nav scope），退出相机页销毁即恢复默认
      * - 每次 [onImageSaved] 读取最新值传给 WatermarkGenerator，对本次及后续拍照立即生效
@@ -277,7 +266,7 @@ class CameraViewModel @Inject constructor(
     /**
      * 更新会话级水印文本覆盖（由水印编辑对话框「确定」触发）。
      *
-     * 传入的 map 应只含非空白键值；空 map 等价于恢复默认。
+     * 传入的 map 应只含非空白的 `slot_N` 键值；空 map 等价于恢复默认。
      */
     fun updateWatermarkOverrides(overrides: Map<String, String>) {
         _watermarkOverrides.value = overrides.filterValues { it.isNotBlank() }
@@ -303,17 +292,8 @@ class CameraViewModel @Inject constructor(
     /**
      * 触发拍照。
      *
-     * 流程：
-     * 1. 校验主 key 就绪
-     * 2. 准备输出文件 `photos/<progressKey>/<fileName>.jpg`
-     *    （文件名由 [NamingRuleGenerator] 按用户配置生成，全 NONE 时回退 IMG_<timestamp>.jpg）
-     * 3. saveCameraSession（带 photo_path/photo_launch_time，防进程死亡）
-     * 4. cameraEngine.captureToFile(outputFile, mainExecutor, onSaved, onError)
-     *    （闪光策略由引擎按 flashMode 内部处理）
-     * 5. 成功回调 [onImageSaved]：取位置 -> 水印 -> 缩略图 -> markPhoto -> Toast
-     * 6. 失败回调 [onCaptureError]：Toast + Timber
-     *
-     * 因 [NamingConfigRepository.getConfig] 为 suspend，文件名生成在协程中完成，
+     * 文件名由 [NamingRuleGenerator] 按用户配置生成，全 NONE 时回退 IMG_<timestamp>.jpg；
+     * 因 [NamingConfigRepository.getConfig] 为 suspend，文件名生成在 IO 协程中完成，
      * 随后切回主线程调用 [CameraEngine.captureToFile]。
      */
     fun takePhoto() {
@@ -337,7 +317,6 @@ class CameraViewModel @Inject constructor(
         _uiState.update { it.copy(isCapturing = true, lastSavedPath = null) }
 
         viewModelScope.launch {
-            // 文件名生成（config 读取需在 IO 线程）
             val fileName = withContext(Dispatchers.IO) {
                 val config = namingConfigRepository.getConfig()
                 val sequence = calculateNextSequence(photosDir, currentPhotoType)
@@ -350,7 +329,7 @@ class CameraViewModel @Inject constructor(
             }
             val outputFile = File(photosDir, fileName)
 
-            // 持久化会话（防止拍照过程中被系统杀死）
+            // 拍照前落盘会话，进程被杀后可恢复
             saveCameraSession(
                 launched = true,
                 photoPath = outputFile.absolutePath,
@@ -385,20 +364,7 @@ class CameraViewModel @Inject constructor(
     }
 
     /**
-     * 拍照成功回调（在主线程执行）。
-     *
-     * 步骤：
-     * 1. 校验文件 size > 0
-     * 2. 获取位置（LocationService）
-     * 3. 生成水印 3 段内容（日期 / 地址 / 经纬度）
-     * 4. 调用 WatermarkGenerator.drawAndSave 覆盖原文件（必须先完成，后续步骤依赖 savedFile）
-     * 5. 并行执行（水印完成后无相互依赖）：
-     *    - copyToMediaStore（系统相册可见）
-     *    - generateThumbnail（缩略图）
-     *    - markPhoto + markPhotoBatch（进度持久化）
-     *    - addProgressKey（Excel 数据索引）
-     * 6. 显示 Toast "已拍摄 N 张"
-     * 7. clearCameraSession
+     * 拍照成功回调（在主线程执行）：水印覆盖保存后，并行执行相册复制、缩略图、进度持久化等后处理。
      */
     private fun onImageSaved(savedFile: File, primary: CustomerRow) {
         if (!savedFile.exists() || savedFile.length() <= 0) {
@@ -417,10 +383,8 @@ class CameraViewModel @Inject constructor(
                 val primaryKey = primary.progressKey
                 val photoType = _uiState.value.currentPhotoType
 
-                // 1. 位置：三级回退
-                //   ① 实时定位（800ms 超时）
-                //   ② 5 分钟内历史定位（地下/无信号场景兜底）
-                //   ③ getLastKnownLocation：不限年龄的最近一次已知定位（DataStore 持久化兜底）
+                // 定位采用三级回退：① 实时定位（800ms 超时）→ ② 5 分钟内历史定位（地下/无信号场景兜底）
+                // → ③ 取最近一次已知位置兜底（不限年龄，含持久化的历史位置）
                 var location: LocationResult? = withContext(Dispatchers.IO) {
                     try {
                         withTimeoutOrNull(CAPTURE_LOCATION_TIMEOUT_MS) {
@@ -464,32 +428,24 @@ class CameraViewModel @Inject constructor(
                 // 同步更新定位失败状态（供 Snackbar 显示）；兜底命中视为定位成功
                 _uiState.update { it.copy(locationFailed = location == null) }
 
-                // 2. 读取持久化水印配置（含 4 个内容显示开关），按开关过滤水印段
                 val savedConfig = watermarkConfigRepository.configFlow().first()
                 val photoQuality = watermarkConfigRepository.getPhotoQuality().first()
-                val segments = watermarkGenerator.buildSegments(
-                    captureTimeMillis = System.currentTimeMillis(),
+                // 按持久化段配置逐槽生成水印行（slotIndex to line），主行数据供
+                // SERIAL/BORROWER/PROPERTY_TYPE/REMARK 段取值
+                val captureTimeMillis = System.currentTimeMillis()
+                val slotLines = watermarkGenerator.buildSegments(
+                    config = savedConfig,
+                    captureTimeMillis = captureTimeMillis,
                     location = location,
-                    serial = primary.serial.takeIf { it.isNotBlank() },
-                    showDate = savedConfig.showDate,
-                    showSerial = savedConfig.showSerial,
-                    showAddress = savedConfig.showAddress,
-                    showLatlng = savedConfig.showLatlng,
+                    row = primary,
                 )
-                val config = WatermarkConfig(
-                    segments = segments,
-                    position = savedConfig.position,
-                    fontSize = savedConfig.fontSize,
-                    opacity = savedConfig.opacity,
-                    enabled = savedConfig.enabled,
-                    showDate = savedConfig.showDate,
-                    showSerial = savedConfig.showSerial,
-                    showAddress = savedConfig.showAddress,
-                    showLatlng = savedConfig.showLatlng,
+                val config = savedConfig.copy(
+                    segments = slotLines.map { it.second },
+                    slotLines = slotLines,
                 )
 
-                // 3. 绘制水印并覆盖保存（同一路径），按照片质量等比缩放；
-                //    每次拍照读取最新 watermarkOverrides，编辑后立即对本张及后续照片生效
+                // 绘制水印并覆盖保存原图路径；会话级编辑确认后，本张及后续照片立即使用最新覆盖文本
+                // （overrides key 为 "slot_N"，drawAndSave 按槽位替换对应行）
                 val watermarkOverridesSnapshot = _watermarkOverrides.value
                 val watermarkedPath = withContext(Dispatchers.IO) {
                     watermarkGenerator.drawAndSave(
@@ -506,13 +462,11 @@ class CameraViewModel @Inject constructor(
                 }
 
                 // 3.5 首拍判定：以 progressRepository 的进度快照为准（而非目录文件计数）。
-                // 理由：
                 // - progress.json 的 photos 列表只由 markPhoto/markPhotoBatch 写入真实照片，
                 //   定位截图不调用 markPhoto，天然不被计入进度/序号统计；
                 // - 此处读取发生在下方第 4 步 markPhoto 启动之前，primary 本张尚未落盘，
                 //   photos 为空即首拍，无文件系统计数与本张照片写入的竞态；
-                // - location 已是三级回退（实时/5min 历史/DataStore 最后已知）后的结果，
-                //   为 null 说明无任何可用定位，直接不生成截图（无进一步兜底）。
+                // - 定位完全不可用时不生成本批截图（无进一步兜底手段）。
                 val firstShotRows = if (location != null) {
                     val candidates = listOf(primary) + _uiState.value.multiSelectRows
                     buildList {
@@ -527,16 +481,13 @@ class CameraViewModel @Inject constructor(
                     emptyList()
                 }
 
-                // 4. 并行后处理：水印已完成，savedFile 已写入水印。
-                // 以下四步无相互依赖（MediaStore 读 savedFile / 缩略图读 savedFile /
-                // markPhoto 写 JSON / addProgressKey 写 JSON），改为并行执行以缩短总耗时。
-                // isCapturing=true 期间不会发起新拍照，otherKeys/md5 快照在此处一次性读取即可。
+                // 各后处理任务相互独立（只读已落盘的照片文件、各写各的结果记录），并行执行缩短总耗时；
+                // 拍摄进行中不会并发新拍照，所需的多选行与校验值快照在启动前一次性读取
                 val otherKeys = _uiState.value.multiSelectRows.map { it.progressKey }
                 val md5 = _uiState.value.excelUriMd5
 
-                // 4.1 复制到 MediaStore（DCIM/LoanPhoto），使照片在系统相册可见。
                 // app 私有目录（getExternalFilesDir）不被 MediaScanner 索引，
-                // 必须通过 MediaStore API 写入公共 DCIM 目录才能在相册可见。
+                // 需经系统媒体库接口写入公共 DCIM 目录照片才能在相册可见；
                 // 多选拍摄时物理文件只有一份，仅需复制一次。
                 val mediaStoreDeferred = async(Dispatchers.IO) {
                     runCatching { copyToMediaStore(savedFile) }
@@ -553,7 +504,7 @@ class CameraViewModel @Inject constructor(
                     }.onFailure { Timber.w(it, "缩略图生成失败") }
                 }
 
-                // 4.3 进度持久化：主 key 走 markPhoto，多选其他 keys 走 markPhotoBatch
+                // 多选时其余行的进度由下方批量接口统一写入
                 val markPhotoDeferred = async(Dispatchers.IO) {
                     runCatching {
                         progressRepository.markPhoto(
@@ -612,13 +563,12 @@ class CameraViewModel @Inject constructor(
                     }
                 }
 
-                // 等待所有并行任务完成（joinAll 不抛异常；各任务内部已用 runCatching 兜底）
+                // 等待全部并行任务结束（不会向外抛异常，各任务内部已自行捕获兜底）
                 joinAll(mediaStoreDeferred, thumbnailDeferred, markPhotoDeferred, addIndexDeferred)
 
                 // 取缩略图结果供 UI 使用（此时已完成，立即返回）
                 val thumbPath = thumbnailDeferred.await().getOrNull()
 
-                // 6. UI 更新
                 val newSessionCount = _uiState.value.photosThisSession + 1
                 val newTotal = _uiState.value.totalPhotos + 1
                 _uiState.update {
@@ -669,7 +619,7 @@ class CameraViewModel @Inject constructor(
     }
 
     /**
-     * 保存相机会话（11 字段，兼容 Kivy v3.22.24）。
+     * 保存相机会话（11 个字段）。
      *
      * - [launched] 对应 camera_launched
      * - [photoPath] photo_path（拍照前写入，恢复时校验文件是否存在）
@@ -758,8 +708,8 @@ class CameraViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        // 释放引擎资源。CameraX 后端为 no-op（ProcessCameraProvider 在 Lifecycle destroy 时
-        // 自动 unbind）；Camera2 后端由实现自行关闭 camera/session。
+        // 释放引擎资源：CameraX 由 ProcessCameraProvider 随 Lifecycle 自动解绑（no-op），
+        // Camera2 引擎在自身释放流程内关闭设备与会话。
         cameraEngine.release()
     }
 

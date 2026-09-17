@@ -14,12 +14,8 @@ import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
 /**
- * 主 Activity
- * - Compose 入口
- * - Hilt 注入
- * - 竖屏锁定（在 AndroidManifest 中配置）
- * - adjustResize 键盘适配（在 AndroidManifest 中配置）
- * - 授权校验：LicenseChecker 恒授权，仅安全校验失败时展示 [LockScreen]，阻止进入主界面
+ * 主 Activity：授权校验由 [LicenseChecker] 处理（当前恒授权），
+ * 仅安全校验失败时展示 [LockScreen] 阻止进入主界面。
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -34,8 +30,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // 安全校验：Application 阶段已校验过则跳过，否则再次校验
-        // （securityFailed = true 时不再重复 verify，保留 Application 阶段的失败原因）
+        // 入口阶段已校验失败时直接复用其结果，不再重复校验，并沿用其失败原因
         val securityOk = if (LoanPhotoApplication.securityFailed) {
             false
         } else {

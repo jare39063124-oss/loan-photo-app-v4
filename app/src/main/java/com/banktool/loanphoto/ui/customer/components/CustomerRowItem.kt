@@ -129,7 +129,6 @@ fun CustomerRowItem(
                         .weight(1f)
                         .padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
                 ) {
-                    // 第一行：[序号] 借款人名 + 同类型标记星标
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (row.serial.isNotBlank()) {
                             Text(
@@ -162,7 +161,6 @@ fun CustomerRowItem(
 
                     Spacer(modifier = Modifier.size(2.dp))
 
-                    // 第二行：地址概 + 地址详（可点击，弹出导航应用选择）
                     val address = listOf(row.addrGeneral, row.addrDetail)
                         .filter { it.isNotBlank() }
                         .joinToString(" ")
@@ -176,7 +174,7 @@ fun CustomerRowItem(
                         Spacer(modifier = Modifier.size(2.dp))
                     }
 
-                    // 第三行：性质 + 备注
+                    // 性质与备注合并为一行次要文本
                     val meta = listOf(row.propertyType, row.remark)
                         .filter { it.isNotBlank() }
                         .joinToString("  |  ")
@@ -189,7 +187,7 @@ fun CustomerRowItem(
                     }
                 }
 
-                // 最右侧操作按钮（竖向排列）
+                // 操作按钮竖排
                 Column(
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -206,7 +204,7 @@ fun CustomerRowItem(
                         )
                     }
 
-                    // 查看已拍按钮：始终显示（即使 photoCount=0）
+                    // 查看已拍入口始终保留（0 张时也可进入查看）
                     IconButton(
                         onClick = onViewPhotos,
                         modifier = Modifier.size(36.dp),
@@ -273,7 +271,6 @@ private fun PhotoTypeCountRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        // 总计 chip（Accent 强调）
         TotalCountChip(total = totalCount)
         // 各分类 chip（按用户配置遍历）
         configs.forEach { config ->

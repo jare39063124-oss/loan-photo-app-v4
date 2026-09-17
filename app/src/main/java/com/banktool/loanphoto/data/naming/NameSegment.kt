@@ -7,6 +7,7 @@ package com.banktool.loanphoto.data.naming
  * - [BORROWER] 客户名
  * - [SERIAL] 序号（取自 [com.banktool.loanphoto.domain.entity.CustomerRow.serial]）
  * - [ADDRESS] 地址 + 时间（addrGeneral + addrDetail 拼接）
+ * - [CUSTOM] 自定义文本（取自 [NamingConfig] 对应段的 customTextN，空白时该段省略）
  * - [NONE] 空值（该段省略）
  *
  * [displayName] 用于设置页下拉选项展示。
@@ -16,6 +17,7 @@ enum class NameSegment(val displayName: String) {
     BORROWER("客户名"),
     SERIAL("序号"),
     ADDRESS("地址+时间"),
+    CUSTOM("自定义文本"),
     NONE("空值"),
     ;
 

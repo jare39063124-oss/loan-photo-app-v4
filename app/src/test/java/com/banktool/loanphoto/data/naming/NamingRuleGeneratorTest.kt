@@ -7,8 +7,8 @@ import org.junit.Test
 /**
  * [NamingRuleGenerator] 文件名字节预算截断测试。
  *
- * 背景：v4.1.5 修复拍保存崩溃——超长地址/客户名导致文件名 UTF-8 约 256 字节，
- * 超过 Android 文件系统 NAME_MAX=255。生成器现保证最终文件名 ≤240 字节，
+ * 背景：超长地址/客户名曾使文件名 UTF-8 达约 256 字节，超过 Android 文件系统
+ * NAME_MAX=255 导致保存崩溃。生成器现保证最终文件名 ≤240 字节，
  * 且尾部后缀 `-照片类型-NN.jpg` 完整保留（CameraViewModel.calculateNextSequence
  * 依赖文件名包含 `-${类型名}-` 统计同类型张数）。
  */
@@ -129,5 +129,72 @@ class NamingRuleGeneratorTest {
         assertTrue("生成名超过 240 字节: $name", name.toByteArray(Charsets.UTF_8).size <= 240)
         assertTrue("尾部后缀被截断: $name", name.endsWith("-内部-12.jpg"))
         assertTrue("地址段（最短中段）不应被截空: $name", name.contains("盘锦市"))
+    }
+
+    @Test
+    fun `CUSTOM短文本段生成名包含该文本`() {
+        val row = CustomerRow(
+            rowIndex = 4,
+            serial = "1",
+            borrower = "张三",
+            addrGeneral = "盘锦市兴隆台区",
+            addrDetail = "",
+            propertyType = "",
+            remark = "",
+            progressKey = "test000000000005",
+        )
+        // 段1=CUSTOM("押品")，段2=客户名，段3/4=NONE
+        val config = NamingConfig(
+            segment1 = NameSegment.CUSTOM,
+            customText1 = "押品",
+            segment2 = NameSegment.BORROWER,
+        )
+
+        val name = generator.generate(
+            config = config,
+            customerRow = row,
+            photoTypeDisplayName = "远景",
+            sequence = 1,
+            timestamp = fixedTimestamp,
+        )
+
+        assertTrue("生成名缺少自定义文本: $name", name.contains("押品"))
+        assertTrue("生成名缺少客户名段: $name", name.contains("张三"))
+        assertTrue("尾部后缀被截断: $name", name.endsWith("-远景-01.jpg"))
+    }
+
+    @Test
+    fun `CUSTOM超长文本段生成名不超过240字节且后缀完整`() {
+        val row = CustomerRow(
+            rowIndex = 5,
+            serial = "1",
+            borrower = "李四",
+            addrGeneral = "",
+            addrDetail = "",
+            propertyType = "",
+            remark = "",
+            progressKey = "test000000000006",
+        )
+        // 超长自定义文本：7 字 × 3B × 50 = 1050 字节，远超 240 字节预算
+        val longCustom = "自定义文本内容测试用".repeat(50)
+        val config = NamingConfig(
+            segment1 = NameSegment.CUSTOM,
+            customText1 = longCustom,
+            segment2 = NameSegment.BORROWER,
+        )
+
+        val name = generator.generate(
+            config = config,
+            customerRow = row,
+            photoTypeDisplayName = "远景",
+            sequence = 3,
+            timestamp = fixedTimestamp,
+        )
+
+        assertTrue("生成名超过 240 字节: $name", name.toByteArray(Charsets.UTF_8).size <= 240)
+        assertTrue("尾部后缀被截断: $name", name.endsWith("-远景-03.jpg"))
+        assertTrue("缺少类型分隔标记（calculateNextSequence 依赖）: $name", name.contains("-远景-"))
+        // 截断按段前缀进行，前缀内容应保留
+        assertTrue("自定义文本前缀未保留: $name", name.startsWith(longCustom.take(10)))
     }
 }

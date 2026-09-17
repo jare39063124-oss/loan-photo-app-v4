@@ -1,8 +1,6 @@
 package com.banktool.loanphoto.domain.repository
 
-/**
- * 走访备注仓库（按 Excel 文件维度保存）。
- */
+/** 走访备注仓库（按 Excel 文件维度保存）。 */
 interface VisitNoteRepository {
 
     /** 读取某 Excel 文件的走访备注，无则返回空串。 */

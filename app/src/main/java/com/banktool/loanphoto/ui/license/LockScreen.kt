@@ -54,14 +54,6 @@ enum class LockState {
  * 在 [com.banktool.loanphoto.MainActivity] 中当 [com.banktool.loanphoto.data.license.LicenseChecker.isAuthorized]
  * 返回 false 时展示，阻止进入主界面。
  *
- * 布局：
- * - [Surface] 全屏 [Bg] 背景
- * - 居中锁定图标（64dp，[Error] 色）
- * - 根据 [lockState] 显示不同标题与提示：
- *   - [LockState.UNAUTHORIZED]：标题「设备未授权」+ 提示「请将以下设备识别码告知作者激活」
- *     + 设备识别码（大字号 [Accent]，点击复制）+ 设备信息 + 联系方式
- *   - [LockState.EXPIRED]：标题「体验已到期」+ 提示「请联系作者续费使用」+ 联系方式
- *
  * 使用 Fluent Design 浅色主题，文字使用系统默认字体（等价 Microsoft YaHei）。
  *
  * @param lockState 锁定状态
@@ -123,7 +115,6 @@ private fun UnauthorizedContent(
     deviceInfo: String,
     extraMessage: String? = null,
 ) {
-    // 额外提示（如应用完整性校验失败原因）
     if (!extraMessage.isNullOrBlank()) {
         Text(
             text = extraMessage,
@@ -154,7 +145,6 @@ private fun UnauthorizedContent(
     )
     Spacer(modifier = Modifier.size(20.dp))
 
-    // 设备识别码卡片（大字号 Accent，点击复制）
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
@@ -265,9 +255,6 @@ private fun ExpiredContent() {
     ContactInfo()
 }
 
-/**
- * 联系方式卡片。
- */
 @Composable
 private fun ContactInfo() {
     Card(

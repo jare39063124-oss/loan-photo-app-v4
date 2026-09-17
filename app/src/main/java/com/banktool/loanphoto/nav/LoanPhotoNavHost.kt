@@ -13,10 +13,6 @@ import com.banktool.loanphoto.ui.progress.ProgressScreen
 import com.banktool.loanphoto.ui.report.ReportScreen
 import com.banktool.loanphoto.ui.settings.SettingsScreen
 
-/**
- * 路由常量
- * 与交接文档第 9.4 节 Clean Architecture 分层对齐
- */
 object Routes {
     const val CUSTOMER_LIST = "customer_list"
     const val CAMERA = "camera"

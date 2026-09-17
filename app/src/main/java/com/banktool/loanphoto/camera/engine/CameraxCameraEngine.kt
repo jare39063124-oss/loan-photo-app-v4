@@ -124,7 +124,7 @@ class CameraxCameraEngine @Inject constructor(
                 )
                 camera = cam
 
-                // 读取 zoomState 初始化缩放范围；minZoom < 1.0 视为广角
+                // minZoom < 1.0 视为设备具备超广角（CameraX 无法直接查询镜头焦距）
                 val zoomState = cam.cameraInfo.zoomState.value
                 if (zoomState != null) {
                     val minZoom = zoomState.minZoomRatio
@@ -139,7 +139,6 @@ class CameraxCameraEngine @Inject constructor(
                     )
                 }
 
-                // 若当前处于常亮模式（flashMode==2），相机绑定后立即打开补光灯
                 if (flashMode == 2) {
                     cam.cameraControl.enableTorch(true)
                 }
@@ -152,7 +151,6 @@ class CameraxCameraEngine @Inject constructor(
                 val observer = object : LifecycleEventObserver {
                     override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
                         if (event == Lifecycle.Event.ON_RESUME) {
-                            // 重新读取 zoomState，若 isWideAngleActive=true 但实际 zoomRatio>=1.0（被 CameraX 重置），恢复广角
                             val cam = camera ?: return
                             val zoomState = cam.cameraInfo.zoomState.value ?: return
                             val currentRatio = zoomState.zoomRatio
@@ -163,7 +161,6 @@ class CameraxCameraEngine @Inject constructor(
                                 cam.cameraControl.setZoomRatio(minRatio)
                                 _zoomInfo.value = _zoomInfo.value.copy(zoomRatio = minRatio)
                             } else {
-                                // 同步当前 zoomRatio 到 _zoomInfo
                                 _zoomInfo.value = _zoomInfo.value.copy(
                                     zoomRatio = currentRatio,
                                     minZoomRatio = minRatio,
@@ -199,7 +196,7 @@ class CameraxCameraEngine @Inject constructor(
             else -> ImageCapture.FLASH_MODE_OFF
         }
 
-        // 更新 targetRotation 为当前显示屏旋转，处理 bind 后用户旋转设备的情况
+        // bind 后设备可能已旋转，拍照前刷新旋转角度
         imageCapture.targetRotation = currentDisplayRotation()
 
         val options = ImageCapture.OutputFileOptions

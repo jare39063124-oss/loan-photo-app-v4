@@ -83,6 +83,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.SearchField
 import com.banktool.loanphoto.ui.camera.PhotoGallerySheet
+import com.banktool.loanphoto.ui.customer.components.ColumnMappingDialog
 import com.banktool.loanphoto.ui.customer.components.CustomerRowItem
 import com.banktool.loanphoto.ui.customer.components.EditEntryDialog
 import com.banktool.loanphoto.ui.customer.components.NavigationDialog
@@ -101,21 +102,7 @@ import java.io.File
 /**
  * 客户清单列表主界面。
  *
- * 布局：
- * - Scaffold + TopAppBar（标题 + 导入/最近/查看进度/AI 功能/设置按钮）
- * - 搜索栏（全选 CheckBox + 字段下拉 + 输入框）
- * - LazyColumn（itemsIndexed, key = rowIndex）
- * - FAB（批量拍照）
- *
  * SAF 导入使用 [ActivityResultContracts.OpenDocument]，并持久化 URI 读权限。
- *
- * @param viewModel 列表 ViewModel
- * @param onImportExcel 外部导入回调（Screen 内部已实现 SAF，此回调作为可选 hook）
- * @param onGenerateReport 跳转 AI 日报表
- * @param onTakePhoto 跳转拍照（传入选中行）
- * @param onViewProgress 查看进度（跳转 ProgressScreen）
- * @param onOpenAssistant 跳转 AI 拍摄手
- * @param onOpenSettings 跳转设置页
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -132,29 +119,15 @@ fun CustomerListScreen(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // AI 功能下拉菜单展开状态
     var showAiMenu by remember { mutableStateOf(false) }
-
-    // 已拍照片画廊 BottomSheet 当前关联的行（null 表示不显示）
     var gallerySheetRow by remember { mutableStateOf<CustomerRow?>(null) }
-
-    // 地址导航弹窗当前的目标地址（null 表示不显示）
     var selectedNavAddress by remember { mutableStateOf<String?>(null) }
-
-    // 「编辑条目」弹窗当前关联的行（null 表示不显示）
     var editEntryRow by remember { mutableStateOf<CustomerRow?>(null) }
-
-    // 添加查勘条目弹窗是否显示
     var showAddEntryDialog by remember { mutableStateOf(false) }
-
-    // 照片导出弹窗是否显示
     var showExportDialog by remember { mutableStateOf(false) }
-
-    // 导出状态（用于驱动 ExportDialog 三态切换与完成后的 Toast/分享）
     val exportState by viewModel.exportState.collectAsStateWithLifecycle()
 
-    // 「保存到本地」：通过 SAF ACTION_CREATE_DOCUMENT 让用户选择保存位置，
-    // 然后把导出文件复制到目标 URI。pendingSaveFile 暂存待保存的文件。
+    // 「保存到本地」经系统 SAF 选择目标位置后复制导出文件
     var pendingSaveFile by remember { mutableStateOf<File?>(null) }
     val saveToLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("*/*"),
@@ -173,13 +146,12 @@ fun CustomerListScreen(
         pendingSaveFile = null
     }
 
-    // 拍照返回后刷新照片计数（含各分类计数）
+    // 从拍照页返回后刷新照片计数
     LifecycleResumeEffect(Unit) {
         viewModel.refreshPhotoCounts()
         onPauseOrDispose { }
     }
 
-    // SAF Excel 导入
     val pickExcel = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
@@ -207,7 +179,6 @@ fun CustomerListScreen(
         )
     }
 
-    // 消息提示
     LaunchedEffect(uiState.message, uiState.error) {
         uiState.message?.let {
             snackbarHostState.showSnackbar(it)
@@ -219,7 +190,6 @@ fun CustomerListScreen(
         }
     }
 
-    // 解析当前过滤后的可见行（按 rowIndex 查找）
     val visibleRows: List<CustomerRow> = remember(
         uiState.filteredIndices,
         uiState.rows,
@@ -227,15 +197,14 @@ fun CustomerListScreen(
         if (uiState.filteredIndices.isEmpty() || uiState.rows.isEmpty()) {
             emptyList()
         } else {
-            val byKey = uiState.rows.associateBy { it.rowIndex }
-            uiState.filteredIndices.mapNotNull { byKey[it] }
+            val byRowIndex = uiState.rows.associateBy { it.rowIndex }
+            uiState.filteredIndices.mapNotNull { byRowIndex[it] }
         }
     }
 
     val allFilteredSelected = uiState.filteredIndices.isNotEmpty() &&
         uiState.selectedRows.containsAll(uiState.filteredIndices)
 
-    // 最近文件 BottomSheet
     if (uiState.showRecentFilesSheet) {
         RecentFilesBottomSheet(
             recentFiles = uiState.recentFiles,
@@ -250,7 +219,6 @@ fun CustomerListScreen(
         )
     }
 
-    // 备注编辑弹窗
     uiState.editingRemarkRowIndex?.let { rowIndex ->
         val row = uiState.rows.firstOrNull { it.rowIndex == rowIndex }
         val rowTitle = row?.let { "[${it.serial}] ${it.borrower}" } ?: ""
@@ -264,7 +232,17 @@ fun CustomerListScreen(
         )
     }
 
-    // 地址导航弹窗（高德/百度）
+    // 无表头文件：列映射确认弹窗（确认后按映射解析渲染，取消则中断导入）
+    uiState.pendingColumnMapping?.let { pending ->
+        ColumnMappingDialog(
+            columnSamples = pending.columnSamples,
+            onConfirm = { mapping ->
+                viewModel.confirmColumnMapping(mapping)
+            },
+            onCancel = { viewModel.cancelColumnMapping() },
+        )
+    }
+
     selectedNavAddress?.let { address ->
         NavigationDialog(
             address = address,
@@ -272,7 +250,7 @@ fun CustomerListScreen(
         )
     }
 
-    // 编辑条目弹窗（全量编辑：备注初始值合并生效值，_row_remarks 优先于 Excel F 列）
+    // 编辑框备注取值：行级备注（progress.json）优先，为空时回退 Excel 备注列
     editEntryRow?.let { row ->
         val effectiveRemark = viewModel.getRowRemark(row.rowIndex).ifBlank { row.remark }
         val initialRow = if (effectiveRemark == row.remark) row else row.copy(remark = effectiveRemark)
@@ -286,7 +264,6 @@ fun CustomerListScreen(
         )
     }
 
-    // 添加查勘条目弹窗
     if (showAddEntryDialog) {
         AddEntryDialog(
             onSave = { serial, borrower, address ->
@@ -297,7 +274,6 @@ fun CustomerListScreen(
         )
     }
 
-    // 照片导出弹窗（三态：配置 / 进度 / 完成）
     if (showExportDialog) {
         ExportDialog(
             exportState = exportState,
@@ -363,7 +339,6 @@ fun CustomerListScreen(
                                 tint = Accent,
                             )
                         }
-                        // 照片导出入口（紧邻 AI 功能入口）
                         IconButton(onClick = {
                             showExportDialog = true
                             viewModel.resetExportState()
@@ -375,7 +350,6 @@ fun CustomerListScreen(
                             )
                         }
                     }
-                    // AI 功能入口（机器人图标 + 下拉菜单）
                     Box {
                         IconButton(onClick = { showAiMenu = true }) {
                             Icon(
@@ -404,7 +378,6 @@ fun CustomerListScreen(
                             )
                         }
                     }
-                    // 设置入口
                     IconButton(onClick = onOpenSettings) {
                         Icon(
                             imageVector = Icons.Filled.Settings,
@@ -462,7 +435,7 @@ fun CustomerListScreen(
                 onClearHistory = viewModel::clearSearchHistory,
             )
 
-            // 二级搜索栏：在一级结果基础上二次过滤，尺寸约为一级的 80%
+            // 二级搜索在一级筛选结果上继续过滤
             Spacer(modifier = Modifier.height(4.dp))
             SearchBarRow(
                 searchField = uiState.secondSearchField,
@@ -483,7 +456,7 @@ fun CustomerListScreen(
                 chipVerticalPadding = 6.dp,
             )
 
-            // 添加查勘条目按钮（仅在有数据时显示，避免无文件时点击无响应）
+            // 仅在有数据时显示，避免无文件时点击无响应
             if (uiState.rows.isNotEmpty()) {
                 Row(
                     modifier = Modifier
@@ -504,10 +477,8 @@ fun CustomerListScreen(
                 }
             }
 
-            // 状态条
             StatusBar(uiState = uiState)
 
-            // 列表 / 空态 / 加载态
             Box(modifier = Modifier.fillMaxSize()) {
                 when {
                     uiState.isLoading -> LoadingState()
@@ -525,7 +496,6 @@ fun CustomerListScreen(
                                 items = visibleRows,
                                 key = { row -> row.rowIndex },
                             ) { row ->
-                                // 长按菜单状态：每行独立
                                 var menuExpanded by remember { mutableStateOf(false) }
                                 Box {
                                     CustomerRowItem(
@@ -568,7 +538,6 @@ fun CustomerListScreen(
                     }
                 }
 
-                // 刷新计数指示器
                 if (uiState.isRefreshingCounts) {
                     CircularProgressIndicator(
                         modifier = Modifier
@@ -583,7 +552,6 @@ fun CustomerListScreen(
         }
     }
 
-    // 已拍照片画廊 BottomSheet
     gallerySheetRow?.let { row ->
         val galleryContext = LocalContext.current
         val thumbnails = remember(gallerySheetRow) {
@@ -612,15 +580,9 @@ fun CustomerListScreen(
 /**
  * 搜索栏：全选 CheckBox（可选） + 字段下拉 + 输入框 + 搜索历史下拉。
  *
- * 一级搜索栏显示全选 CheckBox；二级搜索栏通过 [showSelectAll]=false 隐藏 CheckBox，
- * 并通过 [fontSize]/[fieldChipWidth]/[rowVerticalPadding]/[chipHorizontalPadding]/
- * [chipVerticalPadding] 收紧尺寸（约为一级的 80%）。
- *
- * v4.1.4 起所有字段（含 VISITED/UNVISITED）均显示输入框；
+ * 一级搜索栏显示全选 CheckBox；二级搜索栏通过 [showSelectAll]=false 隐藏并收紧尺寸。
  * VISITED/UNVISITED 选中时由 ViewModel 先按状态过滤再按文本匹配全量字段。
- *
- * v4.1.5 搜索历史：输入框聚焦且文本为空时展示最近 5 条搜索历史（一/二级共用），
- * 点击历史项填入并过滤；键盘搜索动作提交非空 query 时写入历史（[onSearchSubmit]）。
+ * 聚焦且文本为空时展示最近 5 条搜索历史；提交非空 query 时写入历史。
  */
 @Composable
 private fun SearchBarRow(
@@ -631,11 +593,9 @@ private fun SearchBarRow(
     onSearchQueryChange: (String) -> Unit,
     onSearchFieldChange: (SearchField) -> Unit,
     onToggleSelectAll: () -> Unit,
-    // 搜索历史（一/二级共用）
     history: List<String> = emptyList(),
     onSearchSubmit: (String) -> Unit = {},
     onClearHistory: () -> Unit = {},
-    // 二级搜索栏样式参数（默认值匹配一级搜索栏）
     showSelectAll: Boolean = true,
     fontSize: TextUnit = 14.sp,
     fieldChipWidth: Dp = 112.dp,
@@ -648,12 +608,9 @@ private fun SearchBarRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // vertical 缩短至 4dp（原 8dp），让「添加查勘条目」按钮更贴近搜索栏，
-            // 为列表条目留出更多垂直空间。二级搜索栏通过 rowVerticalPadding 进一步收紧。
             .padding(horizontal = 8.dp, vertical = rowVerticalPadding),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 全选 CheckBox（仅一级搜索栏显示，置于最左侧）
         if (showSelectAll) {
             Checkbox(
                 checked = allFilteredSelected,
@@ -667,7 +624,6 @@ private fun SearchBarRow(
             Spacer(modifier = Modifier.width(8.dp))
         }
 
-        // 字段下拉触发器
         Box {
             Surface(
                 shape = RoundedCornerShape(8.dp),
@@ -715,8 +671,6 @@ private fun SearchBarRow(
 
         Spacer(modifier = Modifier.width(8.dp))
 
-        // 搜索输入框：所有字段（含 VISITED/UNVISITED）均显示输入框。
-        // VISITED/UNVISITED 选中时由 ViewModel 先按状态过滤再按文本匹配。
         // Box 作为搜索历史 DropdownMenu 的锚点。
         var historyExpanded by remember { mutableStateOf(false) }
         Box(modifier = Modifier.weight(1f)) {
@@ -754,12 +708,10 @@ private fun SearchBarRow(
                 textStyle = TextStyle(fontSize = fontSize, color = TextColor),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(
-                    // 键盘搜索动作：提交非空 query 时写入搜索历史
                     onSearch = { onSearchSubmit(searchQuery) },
                 ),
             )
 
-            // 搜索历史下拉（最近 5 条，一/二级共用）
             DropdownMenu(
                 expanded = historyExpanded,
                 onDismissRequest = { historyExpanded = false },
@@ -901,7 +853,6 @@ private fun EmptyState(
                 tint = Accent,
             )
         }
-        // 最近打开文件
         if (recentFiles.isNotEmpty()) {
             Spacer(modifier = Modifier.size(24.dp))
             Text(

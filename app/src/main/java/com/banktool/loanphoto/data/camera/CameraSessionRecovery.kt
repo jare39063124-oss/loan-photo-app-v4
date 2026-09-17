@@ -20,14 +20,6 @@ import javax.inject.Singleton
  * 相机会话恢复器。
  *
  * 在 Application.onCreate 调用 [checkAndRecover]，处理上次拍照被系统中断的情况。
- *
- * 恢复流程：
- * 1. 读取 [CameraSession]；若不存在或 [CameraSession.cameraLaunched]=false 直接返回
- * 2. 校验 [CameraSession.photoPath] 文件存在且 size > 0
- * 3. 兜底扫描 DCIM/Camera（[CameraSession.photoLaunchTime] 之后创建、> 10KB、10 分钟内）
- * 4. 找到 recoveredPath -> 调用 [onPhotoDoneWithContext]（markPhoto 主 + markPhotoBatch 其余）
- * 5. 全部失败 -> Toast "上次拍照未完成，已恢复会话"
- * 6. 无论成功失败都 [CameraSessionRepository.clearSession]
  */
 @Singleton
 class CameraSessionRecovery @Inject constructor(
@@ -71,7 +63,6 @@ class CameraSessionRecovery @Inject constructor(
      * 校验 [CameraSession.photoPath] 与 DCIM/Camera 兜底。
      */
     private fun recoverPath(session: CameraSession): String? {
-        // Step 1: 直接校验 photo_path
         session.photoPath?.let { p ->
             val f = File(p)
             if (f.exists() && f.length() > 0) {
@@ -80,7 +71,6 @@ class CameraSessionRecovery @Inject constructor(
             }
         }
 
-        // Step 2: DCIM/Camera 兜底扫描
         val dcimCamera = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
             "Camera",

@@ -18,18 +18,13 @@ import java.util.Locale
 import javax.inject.Inject
 
 /**
- * 拍照进度仓库实现。
+ * 拍照进度仓库实现，数据落盘于 `progress.json`。
  *
- * - 文件: `progress.json`（兼容 Kivy v3.22.24）
- * - 并发: [Mutex] 保护所有读改写操作
- * - 原子写: 由 [ProgressFileDataSource] 负责（`.tmp` -> ATOMIC_MOVE）
- * - markPhotoBatch: 单次锁内更新所有 keys，仅 1 次 save
+ * 所有读改写操作由 [Mutex] 串行保护，落盘由 [ProgressFileDataSource]
+ * 以临时文件加原子替换完成；markPhotoBatch 在单次锁内更新所有 keys，只落盘一次。
  *
- * batch_marked 存储格式（Kivy 兼容）：
- * ```json
- * "batch_marked": ["abc123def456abcd", "xyz789uvw012efgh"]
- * ```
- * 即 progressKey 的 JSON 数组。读取时兼容旧版 Map<String,Boolean> 格式。
+ * batch_marked 存 progressKey 的字符串数组，如 `["abc123def456abcd"]`；
+ * 读取时也接受键值对形式的早期数据。
  */
 class ProgressRepositoryImpl @Inject constructor(
     private val dataSource: ProgressFileDataSource,
@@ -84,7 +79,6 @@ class ProgressRepositoryImpl @Inject constructor(
                 val dto = readEntry(fileMap, key).copyWithPhoto(photoPath, photoType, timestamp)
                 fileMap[key] = entryAdapter.toJsonValue(dto)
             }
-            // 单次 save
             dataSource.save(fileMap)
         }
     }
@@ -95,7 +89,7 @@ class ProgressRepositoryImpl @Inject constructor(
                 val fileMap = dataSource.load()
                 val result = HashMap<String, PhotoRecord>(fileMap.size)
                 for ((key, node) in fileMap) {
-                    if (key == KEY_ROW_REMARKS || key == KEY_BATCH_MARKED) continue
+                    if (isInternalKey(key)) continue
                     val dto = entryAdapter.fromJsonValue(node) as? ProgressEntryDto ?: continue
                     result[key] = dto.toPhotoRecord(key)
                 }
@@ -106,56 +100,49 @@ class ProgressRepositoryImpl @Inject constructor(
     override suspend fun getAllProgressKeys(): List<String> =
         withContext(Dispatchers.IO) {
             mutex.withLock {
-                val fileMap = dataSource.load()
-                fileMap.keys.filter { it != KEY_ROW_REMARKS && it != KEY_BATCH_MARKED }
+                dataSource.load().keys.filterNot { isInternalKey(it) }
             }
         }
 
-    // ---- 行级备注 ----
+    // ---- 行级备注（按 Excel 文件隔离，key=_row_remarks_<uriMd5>）----
 
-    override suspend fun getRowRemarks(): Map<String, String> =
-        withContext(Dispatchers.IO) {
-            mutex.withLock {
-                readRowRemarks(dataSource.load())
-            }
-        }
-
-    override suspend fun getRowRemark(rowIndex: Int): String? =
-        withContext(Dispatchers.IO) {
-            mutex.withLock {
-                readRowRemarks(dataSource.load())[rowIndex.toString()]
-            }
-        }
-
-    override suspend fun saveRowRemark(rowIndex: Int, content: String) =
+    override suspend fun getRowRemarks(uriMd5: String): Map<String, String> =
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 val fileMap = dataSource.load()
-                val remarks = readRowRemarks(fileMap)
+                readRowRemarksForFile(fileMap, uriMd5)
+            }
+        }
+
+    override suspend fun saveRowRemark(uriMd5: String, rowIndex: Int, content: String) =
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                val fileMap = dataSource.load()
+                val remarks = readRowRemarksForFile(fileMap, uriMd5).toMutableMap()
                 remarks[rowIndex.toString()] = content
-                fileMap[KEY_ROW_REMARKS] = remarks
+                fileMap[rowRemarksKey(uriMd5)] = remarks
                 dataSource.save(fileMap)
             }
         }
 
-    override suspend fun removeRowRemarks(rowIndexes: List<Int>) =
+    override suspend fun removeRowRemarks(uriMd5: String, rowIndexes: List<Int>) =
         withContext(Dispatchers.IO) {
             if (rowIndexes.isEmpty()) return@withContext
             mutex.withLock {
                 val fileMap = dataSource.load()
-                val remarks = readRowRemarks(fileMap)
+                val remarks = readRowRemarksForFile(fileMap, uriMd5).toMutableMap()
                 var changed = false
                 for (idx in rowIndexes) {
                     if (remarks.remove(idx.toString()) != null) changed = true
                 }
                 if (changed) {
-                    fileMap[KEY_ROW_REMARKS] = remarks
+                    fileMap[rowRemarksKey(uriMd5)] = remarks
                     dataSource.save(fileMap)
                 }
             }
         }
 
-    // ---- 同类型代表性户型标记（Kivy 兼容 Set<String>） ----
+    // ---- 同类型代表性户型标记 ----
 
     override suspend fun getBatchMarkedKeys(): Set<String> =
         withContext(Dispatchers.IO) {
@@ -195,7 +182,7 @@ class ProgressRepositoryImpl @Inject constructor(
                 for (k in keys) {
                     if (fileMap.remove(k) != null) changed = true
                 }
-                // 同时从 batch_marked 中移除
+                // 同步清理对应的代表性户型标记
                 val marked = readBatchMarkedKeys(fileMap).toMutableSet()
                 var markedChanged = false
                 for (k in keys) {
@@ -210,9 +197,9 @@ class ProgressRepositoryImpl @Inject constructor(
         }
 
     /**
-     * v3.22.5 兼容：迁移 photos 列表中失效路径到 APP_DIR 同名文件。
+     * 将 photos 列表中的失效路径重定向到应用目录下的同名文件。
      *
-     * 旧版本可能将照片存于应用私有目录外的失效路径；这里尝试在 [ProgressFileDataSource.appDir]
+     * 早期版本可能把照片存于应用私有目录外的失效路径；这里尝试在 [ProgressFileDataSource.appDir]
      * 下按同名文件找回并替换。
      */
     override suspend fun migratePhotoPaths() = withContext(Dispatchers.IO) {
@@ -220,7 +207,7 @@ class ProgressRepositoryImpl @Inject constructor(
             val fileMap = dataSource.load()
             var changed = false
             val appDir = dataSource.appDir
-            val keysToCheck = fileMap.keys.filter { it != KEY_ROW_REMARKS && it != KEY_BATCH_MARKED }
+            val keysToCheck = fileMap.keys.filterNot { isInternalKey(it) }
             for (key in keysToCheck) {
                 val node = fileMap[key] ?: continue
                 val dto = entryAdapter.fromJsonValue(node) as? ProgressEntryDto ?: continue
@@ -236,7 +223,7 @@ class ProgressRepositoryImpl @Inject constructor(
         }
     }
 
-    /** 单个路径迁移：原文件存在则保留，否则在 appDir 下找同名文件。 */
+    /** 单个路径修复：原文件存在则保留，否则在 appDir 下找同名文件。 */
     private fun migrateOne(path: String, appDir: File): String {
         val f = File(path)
         if (f.exists()) return path
@@ -253,26 +240,51 @@ class ProgressRepositoryImpl @Inject constructor(
         return (entryAdapter.fromJsonValue(node) as? ProgressEntryDto) ?: ProgressEntryDto()
     }
 
-    @Suppress("UNCHECKED_CAST")
-    private fun readRowRemarks(fileMap: Map<String, Any?>): MutableMap<String, String> {
-        val node = fileMap[KEY_ROW_REMARKS] ?: return mutableMapOf()
-        val raw = node as? Map<*, *> ?: return mutableMapOf()
-        return raw.entries.associate { (k, v) ->
+    /**
+     * 读取指定文件的行级备注。
+     *
+     * 新 key（`_row_remarks_<uriMd5>`）缺失时执行一次性迁移：把旧全局 `_row_remarks`
+     * 整体写入新 key 并落盘（旧键保留不删），避免升级后行备注丢失。
+     */
+    private fun readRowRemarksForFile(
+        fileMap: MutableMap<String, Any?>,
+        uriMd5: String,
+    ): Map<String, String> {
+        val newKey = rowRemarksKey(uriMd5)
+        val node = fileMap[newKey]
+        if (node is Map<*, *>) return nodeToRemarks(node)
+        // 一次性迁移：旧全局备注整体写入新 key，旧键保留
+        val legacy = fileMap[KEY_ROW_REMARKS_LEGACY]
+        val migrated = if (legacy is Map<*, *>) nodeToRemarks(legacy) else mutableMapOf()
+        fileMap[newKey] = migrated
+        dataSource.save(fileMap)
+        Timber.i("行级备注迁移到按文件隔离 key=%s（%d 条）", newKey, migrated.size)
+        return migrated
+    }
+
+    private fun nodeToRemarks(node: Map<*, *>): MutableMap<String, String> {
+        return node.entries.associate { (k, v) ->
             (k?.toString() ?: "") to (v?.toString() ?: "")
         }.toMutableMap()
     }
 
+    /** 行级备注按文件隔离的存储 key。 */
+    private fun rowRemarksKey(uriMd5: String): String = "${KEY_ROW_REMARKS_PREFIX}_$uriMd5"
+
+    /** progress.json 内部保留键：行级备注（旧全局键与按文件键）与批量标记。 */
+    private fun isInternalKey(key: String): Boolean =
+        key == KEY_BATCH_MARKED || key.startsWith(KEY_ROW_REMARKS_PREFIX)
+
     /**
-     * 读取 batch_marked：兼容两种格式。
-     * - Kivy 格式: List<String>（progressKey 数组）
-     * - 旧版格式: Map<String, Boolean>（key=rowIndex 或 progressKey）
+     * 读取 batch_marked，接受两种格式：progressKey 的字符串数组，
+     * 或键值对形式（key=rowIndex 或 progressKey）。
      */
     private fun readBatchMarkedKeys(fileMap: Map<String, Any?>): Set<String> {
         val node = fileMap[KEY_BATCH_MARKED] ?: return emptySet()
         return when (node) {
             is List<*> -> node.mapNotNull { it?.toString() }.filter { it.isNotBlank() }.toSet()
             is Map<*, *> -> {
-                // 旧版 Map<String,Boolean>：取 value=true 的 key
+                // 键值对形式的存储，仅保留取值为真的键
                 node.entries
                     .filter { it.value == true }
                     .mapNotNull { it.key?.toString() }
@@ -286,7 +298,9 @@ class ProgressRepositoryImpl @Inject constructor(
     private fun now(): String = dateFormat.format(Date())
 
     private companion object {
-        const val KEY_ROW_REMARKS = "_row_remarks"
+        /** 行级备注 key 前缀：旧全局键 `_row_remarks`，新按文件键 `_row_remarks_<uriMd5>`。 */
+        const val KEY_ROW_REMARKS_PREFIX = "_row_remarks"
+        const val KEY_ROW_REMARKS_LEGACY = "_row_remarks"
         const val KEY_BATCH_MARKED = "batch_marked"
     }
 }
@@ -297,7 +311,7 @@ private fun ProgressEntryDto.toPhotoRecord(key: String): PhotoRecord =
     PhotoRecord(
         progressKey = key,
         photos = photos,
-        // Kivy 用 Map<String,Boolean> 表示类型集合；这里取 value=true 的键
+        // 类型集合以键值对形式存储，取值为真的键即为所选类型
         types = types.filterValues { it }.keys,
         photoTypes = photoTypes,
         timestamp = timestamp,

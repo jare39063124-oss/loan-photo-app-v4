@@ -17,7 +17,6 @@ import javax.inject.Singleton
  *
  * - 最长边 480px 等比缩放
  * - JPEG quality=70
- * - 输出路径: `getExternalFilesDir()/thumbnails/<progressKey>/<basename>.jpg`
  * - 使用 [BitmapFactory.Options.inSampleSize] 控制内存占用
  * - 在 IO Dispatcher 执行
  */
@@ -44,7 +43,6 @@ class ThumbnailGenerator @Inject constructor(
                 return@withContext null
             }
 
-            // 1. 仅解码尺寸
             val boundsOpts = BitmapFactory.Options().apply {
                 inJustDecodeBounds = true
             }
@@ -56,12 +54,9 @@ class ThumbnailGenerator @Inject constructor(
                 return@withContext null
             }
 
-            // 2. 计算 inSampleSize：使最长边解码后仍 >= THUMBNAIL_MAX_EDGE，
-            //    避免反复降采样后再精确缩放。
             val longestEdge = maxOf(srcW, srcH)
             val sampleSize = computeInSampleSize(longestEdge, THUMBNAIL_MAX_EDGE)
 
-            // 3. 真正解码（带采样）
             val decodeOpts = BitmapFactory.Options().apply {
                 inSampleSize = sampleSize
                 inPreferredConfig = Bitmap.Config.ARGB_8888
@@ -71,11 +66,9 @@ class ThumbnailGenerator @Inject constructor(
                 return@withContext null
             }
 
-            // 4. 精确缩放到 480px 最长边
             val scaled = scaleToLongestEdge(sampled, THUMBNAIL_MAX_EDGE)
             if (scaled !== sampled) sampled.recycle()
 
-            // 5. 写出
             val outDir = File(
                 context.getExternalFilesDir(null),
                 "${THUMBNAIL_DIR_NAME}/${sanitizeKey(progressKey)}",

@@ -5,14 +5,8 @@ import org.json.JSONArray
 
 /**
  * 搜索历史存储（最近 [MAX_HISTORY] 条，一/二级搜索栏共用）。
- *
- * 持久化：SharedPreferences("search_prefs")，key [KEY_HISTORY]，值为 JSON 字符串数组
- * （最新在前、已去重）：
- * ```json
- * ["关键词A","关键词B"]
- * ```
- *
- * 数据量极小（≤5 条短字符串），SharedPreferences 同步读写即可，无需切线程。
+ * 持久化到 SharedPreferences("search_prefs")，值为 JSON 字符串数组（最新在前、已去重）。
+ * 数据量极小，同步读写即可。
  */
 class SearchHistoryStore(context: Context) {
 
@@ -27,10 +21,7 @@ class SearchHistoryStore(context: Context) {
         }.getOrDefault(emptyList())
     }
 
-    /**
-     * 写入一条搜索记录：去重、最新置顶、最多保留 [MAX_HISTORY] 条。
-     * 空白串忽略。
-     */
+    /** 写入一条搜索记录：去重、最新置顶、最多保留 [MAX_HISTORY] 条；空白串忽略。 */
     fun add(query: String) {
         val q = query.trim()
         if (q.isEmpty()) return
@@ -38,7 +29,6 @@ class SearchHistoryStore(context: Context) {
         prefs.edit().putString(KEY_HISTORY, encode(updated)).apply()
     }
 
-    /** 清空全部搜索历史。 */
     fun clear() {
         prefs.edit().remove(KEY_HISTORY).apply()
     }

@@ -18,11 +18,10 @@ import java.nio.file.StandardCopyOption
 import javax.inject.Inject
 
 /**
- * 相机会话仓库实现。
+ * 相机会话仓库实现，会话落盘于 `camera_session.json`（11 字段）。
  *
- * - 文件: `camera_session.json`（11 字段，兼容 Kivy v3.22.24）
- * - 原子写: `.tmp` -> [Files.move]([StandardCopyOption.ATOMIC_MOVE])
- * - [Mutex] 保护并发读写
+ * 写入为先落 `.tmp` 再经 [Files.move] 原子替换（[StandardCopyOption.ATOMIC_MOVE]），
+ * 并以 [Mutex] 保护并发读写。
  */
 class CameraSessionRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,

@@ -16,9 +16,8 @@ import javax.inject.Inject
 /**
  * 走访备注仓库实现。
  *
- * - 文件: `visit_notes/<md5>.txt`（纯文本，原子写）
- * - key 为 excelUriMd5（16 位 hex），直接用作文件名
- * - [Mutex] 保护并发读写
+ * 内容按 excelUriMd5（16 位 hex）存为 `visit_notes/<md5>.txt` 纯文本，
+ * 写入先落临时文件再原子替换，[Mutex] 保护并发读写。
  */
 class VisitNoteRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,

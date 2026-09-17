@@ -8,13 +8,12 @@ import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.PhotoRecord
 
 /**
- * AI 日报表系统提示词构建器
+ * AI 日报表系统提示词构建器。
  *
- * 精简版 4 段结构：
- * 1. 字段定义（collateral_info 抵押物清单 / field_description 现状描述 / risk_alert / summary）
- * 2. 信息参考优先级（visit_note 最高 / remark 逐条 / special_log）+ 禁止「未知」模板化
- * 3. 多房间号合并（4+ 合并描述）
- * 4. 禁止事项（「等」字/编造/省略）+ 输出格式（纯 JSON 数组）
+ * 提示词分 4 段组织：字段定义（collateral_info 抵押物清单 / field_description 现状描述 /
+ * risk_alert / summary）；信息参考优先级（visit_note 最高 / remark 逐条 / special_log）
+ * 加禁止「未知」模板化；多房间号合并（4 个以上合并描述）；以及禁止事项（「等」字/编造/省略）
+ * 加输出格式（纯 JSON 数组）。
  */
 object ReportPromptBuilder {
 
@@ -79,7 +78,7 @@ visit_note（走访备注）最高优先级，必须逐字逐句参考；remark�
         sb.appendLine("全量客户共 ${allRecords.size} 个，其中已拍摄 ${visitedRecords.size} 个，同类型代表性户型标记 ${batchMarkedCount} 户。")
         sb.appendLine()
 
-        // 按 borrower 分组（同客户多抵押物合并）；使用全量客户，未拍摄客户也纳入上下文
+        // 为构建 AI 上下文按借款人分组，同客户多抵押物合并；未拍摄客户也纳入
         val groupedByBorrower = allRecords.groupBy { it.first.borrower }
         sb.appendLine("【客户详情】")
         // 客户数据无独立面积字段：面积信息可能存在于 remark 原文或 visit_note 中，
@@ -95,11 +94,11 @@ visit_note（走访备注）最高优先级，必须逐字逐句参考；remark�
                 if (photoRecord != null && visited) {
                     sb.appendLine("  照片数：${photoRecord.photos.size}")
                     sb.appendLine("  照片类型：${photoRecord.types.joinToString("、")}")
-                    // Excel 原始备注(remark)原文：field_description 须逐条参考，必须输出
+                    // Excel 原始备注(remark)原文，供 AI 生成 field_description 时逐条参考，必须输出
                     if (row.remark.isNotEmpty()) {
                         sb.appendLine("  备注(remark原文)：${row.remark}")
                     }
-                    // App 内编辑的行级备注（progress.json _row_remarks），与 Excel 原文可能不同
+                    // App 内编辑的行级备注（progress.json _row_remarks），提示 AI 其与 Excel 原文可能不同
                     if (photoRecord.remark.isNotEmpty() && photoRecord.remark != row.remark) {
                         sb.appendLine("  备注(走访编辑)：${photoRecord.remark}")
                     }
@@ -150,7 +149,7 @@ visit_note（走访备注）最高优先级，必须逐字逐句参考；remark�
                 ChatMessage(role = "user", content = userPrompt)
             ),
             temperature = 0.3,
-            // 提升 maxTokens 至 16384，避免长客户列表导致 JSON 响应被截断（finishReason=length）
+            // 提升 maxTokens 至 16384，避免长客户列表导致 AI JSON 响应被截断（finishReason=length）
             maxTokens = 16384,
             stream = false
         )

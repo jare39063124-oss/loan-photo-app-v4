@@ -1,15 +1,6 @@
 # 开发环境记录
 
 > 此文件记录所有开发环境安装位置，避免重复安装。
-> 最后更新：2026-07-08（v4.0.2 发版：水印定位修复+命名规则恢复+条目排版重设计+全量计数+查看已拍修复）
-
-## 版本历史
-
-| 版本 | 日期 | 变更 |
-|---|---|---|
-| v4.0.0 | 2026-07-08 | 原生 Android 重写（Kotlin + Compose + Hilt + CameraX + Apache POI + DeepSeek AI），92 文件提交 GitHub |
-| v4.0.1 | 2026-07-08 | 修复 11 项问题：P0 照片相册可见(MediaStore)、AI日报表 numeric cell 报错、全选框左移、客户行全量展示、分类拍照计数、机器人AI入口、设置页、拍摄选项组放大下移、SAF WRITE权限、AiRepository模型配置统一、聊天助手注入客户上下文 |
-| v4.0.2 | 2026-07-08 | 修复 5 项问题：水印定位失效(GMS检查+LocationManager兜底+位置预热+nullable哨兵)、命名规则恢复(4段下拉NameSegment/NamingConfig/NamingRuleGenerator+DataStore)、客户条目排版重设计(左侧竖版操作列+右侧文本区)、查看已拍按钮修复(空状态文案+系统相册跳转)、全量计数显示(总计+5分类含0) |
 
 ## JDK
 
@@ -17,15 +8,15 @@
 |---|---|
 | 版本 | Java 17.0.12 LTS (HotSpot 64-Bit Server) |
 | 路径 | `C:\Program Files\Java\jdk-17` |
-| 来源 | 用户机器已安装（Phase 0 前已存在） |
+| 来源 | 用户机器已安装 |
 
 ## Android Studio
 
 | 项 | 值 |
 |---|---|
-| 安装路径 | `D:\AndroidStudio`（待用户手动安装） |
+| 安装路径 | `D:\AndroidStudio` |
 | 下载地址 | https://developer.android.com/studio |
-| 备注 | GUI 安装程序，需用户手动运行。安装时选择路径 `D:\AndroidStudio` |
+| 备注 | GUI 安装程序。安装时选择路径 `D:\AndroidStudio` |
 
 ## Android SDK
 
@@ -34,10 +25,10 @@
 | ANDROID_HOME | `D:\AndroidSdk` |
 | SDK Platform | android-35 (Android 15) |
 | Build-Tools | 35.0.0 |
-| NDK | 28c (待安装) |
+| NDK | 28c |
 | Platform-Tools | 已安装 |
 | CMDLine-Tools | `D:\AndroidSdk\cmdline-tools\latest` |
-| 系统环境变量 | ANDROID_HOME=D:\AndroidSdk（待设置） |
+| 系统环境变量 | ANDROID_HOME=D:\AndroidSdk |
 
 ## Gradle
 
@@ -53,7 +44,7 @@
 
 | 项 | 值 |
 |---|---|
-| 设备 | Pixel 7（待用户创建） |
+| 设备 | Pixel 7 |
 | API | 35 |
 | 架构 | arm64-v8a |
 | 备注 | 通过 Android Studio → Device Manager 创建 |
@@ -78,7 +69,6 @@
 |---|---|
 | 仓库名 | loan-photo-app-v4 |
 | 与 v3 仓库关系 | 完全独立（v3 = `jare39063124-oss/loan-photo-app`） |
-| 创建方式 | 待用户通过 GitHub Web 或 gh CLI 创建 |
 
 ## 目标机型
 
@@ -87,13 +77,6 @@
 | 华为 Mate 70 | HarmonyOS 4.3 | 真机测试 |
 | OPPO Reno11 Pro | ColorOS 14 | 真机测试 |
 | 小米 13 Pro | HyperOS | 真机测试 |
-
-## 待用户手动完成的事项
-
-1. **安装 Android Studio GUI** — 下载 https://developer.android.com/studio，安装到 `D:\AndroidStudio`
-2. **设置系统环境变量** — `ANDROID_HOME=D:\AndroidSdk`，PATH 追加 `%ANDROID_HOME%\platform-tools`
-3. **创建 GitHub 仓库** — 新建 `loan-photo-app-v4`（空仓库，不勾选 README/.gitignore/license）
-4. **创建 AVD** — Android Studio → Device Manager → Pixel 7 / API 35 / arm64-v8a
 
 ## DeepSeek API Key 安全存储
 

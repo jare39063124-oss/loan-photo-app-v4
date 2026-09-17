@@ -31,10 +31,8 @@ import com.banktool.loanphoto.ui.theme.TextSecondary
 /**
  * 走访备注弹窗。
  *
- * 大号多行 TextField，3 个按钮：
- * - 取消: 关闭弹窗
- * - 保存: 仅持久化到 visit_notes/<md5>.txt，不生成报表
- * - 生成报表: 持久化 + 触发 AI 报表生成（Phase 4 实现，此处预留接口）
+ * 大号多行 TextField，3 个按钮：「保存」仅持久化到 visit_notes/<md5>.txt、不生成报表，
+ * 「生成报表」持久化并触发 AI 报表生成，「取消」直接关闭弹窗。
  *
  * @param initialContent 当前已保存的走访备注内容
  * @param fileName 显示在标题中的 Excel 文件名

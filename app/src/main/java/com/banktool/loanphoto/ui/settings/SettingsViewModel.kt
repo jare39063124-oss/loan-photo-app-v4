@@ -13,6 +13,8 @@ import com.banktool.loanphoto.data.camera.PhotoQuality
 import com.banktool.loanphoto.data.camera.WatermarkConfig
 import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkPosition
+import com.banktool.loanphoto.data.camera.WatermarkSegmentSetting
+import com.banktool.loanphoto.data.camera.WatermarkSource
 import com.banktool.loanphoto.data.log.CrashLogger
 import com.banktool.loanphoto.data.log.FileLoggingTree
 import com.banktool.loanphoto.data.naming.NameSegment
@@ -67,17 +69,17 @@ private val Context.photoTypeDataStore: DataStore<Preferences> by preferencesDat
  * 设置页 ViewModel。
  *
  * 职责：
- * 1. 暴露命名规则配置 [namingConfig]（DataStore 持久化，实时响应）
- * 2. 提供段设置入口 [setSegment]
- * 3. 生成实时预览文件名 [previewFileName]
- * 4. 暴露水印配置 [watermarkConfig]（DataStore 持久化，实时响应）
- * 5. 提供水印设置入口 [setWatermarkEnabled] / [setWatermarkFontSize] /
- *    [setWatermarkPosition] / [setWatermarkOpacity] /
- *    [setShowDate] / [setShowSerial] / [setShowAddress] / [setShowLatlng]
- * 6. 暴露相机参考线配置 [guideLineConfig]（DataStore 持久化，实时响应）
- * 7. 提供参考线开关入口 [onGoldenRatioGridChange] / [onCenterMarkChange]
- * 8. 暴露拍照类型配置 [photoTypeConfigs]（DataStore 持久化，实时响应，默认 5 种内置类型）
- * 9. 提供拍照类型管理入口 [onEditPhotoTypeName] / [onAddPhotoType] / [onDeletePhotoType]
+ * - 暴露命名规则配置 [namingConfig]（DataStore 持久化，实时响应）
+ * - 段设置经 [setSegment] 写入
+ * - 生成实时预览文件名 [previewFileName]
+ * - 暴露水印配置 [watermarkConfig]（DataStore 持久化，实时响应）
+ * - 水印各项经 [setWatermarkEnabled] / [setWatermarkFontSize] /
+ *   [setWatermarkPosition] / [setWatermarkOpacity] / [setSegmentSetting] 设置
+ *   （[setShowDate] / [setShowSerial] / [setShowAddress] / [setShowLatlng] 为旧 4 开关路径，UI 不再调用）
+ * - 暴露相机参考线配置 [guideLineConfig]（DataStore 持久化，实时响应）
+ * - 参考线开关经 [onGoldenRatioGridChange] / [onCenterMarkChange] 切换
+ * - 暴露拍照类型配置 [photoTypeConfigs]（DataStore 持久化，实时响应，默认 5 种内置类型）
+ * - 拍照类型管理经 [onEditPhotoTypeName] / [onAddPhotoType] / [onDeletePhotoType] 完成
  *
  * 注入 [NamingConfigRepository]、[NamingRuleGenerator] 与 [WatermarkConfigRepository]（均 @Singleton）。
  * 参考线配置直接通过应用级 [Context] 持久化到独立 DataStore（`camera_guide`）。
@@ -95,7 +97,7 @@ class SettingsViewModel @Inject constructor(
     val namingConfig: StateFlow<NamingConfig> = namingConfigRepository.configFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, NamingConfig())
 
-    /** 水印配置（初始值 segments 为空，订阅 DataStore 后立即更新为持久化值）。 */
+    /** 水印配置（初始值 segments 为空，订阅 DataStore 后立即更新为持久化值；段配置永不为 null）。 */
     val watermarkConfig: StateFlow<WatermarkConfig> = watermarkConfigRepository.configFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, WatermarkConfig(segments = emptyList()))
 
@@ -148,6 +150,18 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 设置某一段的自定义文本并持久化（该段为 [NameSegment.CUSTOM] 时生效）。
+     *
+     * @param index 段索引（0..3）
+     * @param text 自定义文本
+     */
+    fun setCustomText(index: Int, text: String) {
+        viewModelScope.launch {
+            namingConfigRepository.setCustomText(index, text)
+        }
+    }
+
     /** 启用 / 关闭水印。 */
     fun setWatermarkEnabled(v: Boolean) {
         viewModelScope.launch { watermarkConfigRepository.setEnabled(v) }
@@ -168,22 +182,43 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { watermarkConfigRepository.setOpacity(v) }
     }
 
-    /** 设置是否显示拍摄日期段。 */
+    /**
+     * 设置某个水印段（槽位）配置并持久化。
+     *
+     * @param index 槽位索引（0..3）
+     * @param source 段内容来源（选 [WatermarkSource.CUSTOM] 时 [customText] 为其文本）
+     * @param customText CUSTOM 段的自定义文本（其它来源忽略）
+     */
+    fun setSegmentSetting(index: Int, source: WatermarkSource, customText: String) {
+        viewModelScope.launch {
+            watermarkConfigRepository.setSegmentSetting(index, WatermarkSegmentSetting(source, customText))
+        }
+    }
+
+    /**
+     * 设置是否显示拍摄日期段（旧 4 开关路径，设置页已改用 [setSegmentSetting]，保留兼容）。
+     */
     fun setShowDate(v: Boolean) {
         viewModelScope.launch { watermarkConfigRepository.setShowDate(v) }
     }
 
-    /** 设置是否显示序号段。 */
+    /**
+     * 设置是否显示序号段（旧 4 开关路径，设置页已改用 [setSegmentSetting]，保留兼容）。
+     */
     fun setShowSerial(v: Boolean) {
         viewModelScope.launch { watermarkConfigRepository.setShowSerial(v) }
     }
 
-    /** 设置是否显示地址段。 */
+    /**
+     * 设置是否显示地址段（旧 4 开关路径，设置页已改用 [setSegmentSetting]，保留兼容）。
+     */
     fun setShowAddress(v: Boolean) {
         viewModelScope.launch { watermarkConfigRepository.setShowAddress(v) }
     }
 
-    /** 设置是否显示经纬度段。 */
+    /**
+     * 设置是否显示经纬度段（旧 4 开关路径，设置页已改用 [setSegmentSetting]，保留兼容）。
+     */
     fun setShowLatlng(v: Boolean) {
         viewModelScope.launch { watermarkConfigRepository.setShowLatlng(v) }
     }
@@ -336,9 +371,18 @@ class SettingsViewModel @Inject constructor(
      *
      * 使用固定的 mock 客户数据（borrower="成都投资集团"、addrGeneral="和平区"、
      * addrDetail="XX街123号1430"）、[PhotoType.DISTANT]（远景）、sequence=1，
-     * DATE 段取今日日期。
+     * DATE 段取今日日期。CUSTOM 段使用 [NamingConfig] 持久化的自定义文本；
+     * 某段为 CUSTOM 但文本尚未输入时，预览回退 mock 文本「押品」（真实拍照时空白段被跳过）。
      */
     fun previewFileName(config: NamingConfig): String {
+        val effectiveConfig = with(config) {
+            copy(
+                customText1 = customText1.ifBlank { if (segment1 == NameSegment.CUSTOM) MOCK_CUSTOM_TEXT else "" },
+                customText2 = customText2.ifBlank { if (segment2 == NameSegment.CUSTOM) MOCK_CUSTOM_TEXT else "" },
+                customText3 = customText3.ifBlank { if (segment3 == NameSegment.CUSTOM) MOCK_CUSTOM_TEXT else "" },
+                customText4 = customText4.ifBlank { if (segment4 == NameSegment.CUSTOM) MOCK_CUSTOM_TEXT else "" },
+            )
+        }
         val mockCustomer = CustomerRow(
             rowIndex = 0,
             serial = "1",
@@ -350,7 +394,7 @@ class SettingsViewModel @Inject constructor(
             progressKey = "",
         )
         return namingRuleGenerator.generate(
-            config = config,
+            config = effectiveConfig,
             customerRow = mockCustomer,
             photoTypeDisplayName = PhotoType.DISTANT.displayName,
             sequence = 1,
@@ -369,6 +413,9 @@ class SettingsViewModel @Inject constructor(
     private companion object {
         const val logPrefsName = "log_prefs"
         const val keyLogEnabled = "log_enabled"
+
+        /** previewFileName 中 CUSTOM 段文本为空时的预览 mock 文本。 */
+        const val MOCK_CUSTOM_TEXT = "押品"
 
         val KEY_GOLDEN_RATIO_GRID = booleanPreferencesKey("golden_ratio_grid")
         val KEY_CENTER_MARK = booleanPreferencesKey("center_mark")

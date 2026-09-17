@@ -35,7 +35,6 @@ class SecurityChecker @Inject constructor() {
     fun verify(context: Context): Boolean {
         failReason = ""
 
-        // 1. 签名证书校验
         val expectedHash = BuildConfig.EXPECTED_SIGNING_HASH
         if (expectedHash.isNotEmpty()) {
             val actualHash = getSigningCertSha256(context)
@@ -46,7 +45,6 @@ class SecurityChecker @Inject constructor() {
             }
         }
 
-        // 2. 调试器检测
         if (Debug.isDebuggerConnected()) {
             failReason = "检测到调试器附加"
             Timber.w("Security: debugger connected")
@@ -58,7 +56,6 @@ class SecurityChecker @Inject constructor() {
             return false
         }
 
-        // 3. Frida 端口探测
         if (isFridaListening()) {
             failReason = "检测到注入工具"
             Timber.w("Security: frida detected on port 27042")

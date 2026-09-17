@@ -399,7 +399,7 @@ fun shareExportedFile(context: Context, file: File) {
     runCatching {
         context.startActivity(chooser)
     }.onFailure {
-        // 无可用应用时仅 Toast 提示路径
+        // 系统分享不可用时退化为提示保存路径
         Toast.makeText(
             context,
             "文件已保存到：${file.absolutePath}",

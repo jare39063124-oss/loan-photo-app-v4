@@ -2,11 +2,7 @@ package com.banktool.loanphoto.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-/**
- * Fluent Design 浅色主题色
- * 与交接文档 THEME 常量完全一致（第 11.3 节）
- * 不含 emoji，系统默认字体
- */
+/** Fluent Design 浅色主题色。 */
 val Bg = Color(0xFFF2F4F8)            // 背景
 val Card = Color(0xFFFFFFFF)          // 卡片背景
 val Accent = Color(0xFF2196F3)        // 强调色（蓝）

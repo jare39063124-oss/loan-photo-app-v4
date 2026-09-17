@@ -24,10 +24,6 @@ import com.banktool.loanphoto.ui.theme.TextSecondary
 /**
  * 行备注编辑弹窗。
  *
- * - 显示当前备注内容（如有）
- * - 保存按钮: 调用 [onSave] 传入新内容
- * - 取消按钮: 关闭弹窗
- *
  * 备注 存储到 progress.json 的 `_row_remarks` 字段 (key=行号字符串)，
  * 由 ProgressRepository.saveRowRemark 负责。
  *

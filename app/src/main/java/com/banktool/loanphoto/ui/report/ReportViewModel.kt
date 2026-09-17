@@ -84,14 +84,11 @@ class ReportViewModel @Inject constructor(
     /**
      * 生成日报表。
      *
-     * 流程：
-     * 1. 先持久化特殊日志（与「保存」按钮一致，避免生成失败时丢失输入）
-     * 2. 收集全量客户与已拍摄客户记录（全量清单传入 AI 上下文，已拍摄清单用于模板填充）
-     * 3. 读取走访备注
-     * 4. 调用 AI 生成报表（携带 specialLog 与全量客户清单）
-     * 5. 校验 AI 是否参考了走访备注
-     * 6. 填充模板，得到输出文件路径
-     * 7. 将路径转为 [File]，记录 file + fileSize 到 Success 状态
+     * 流程：先持久化特殊日志（与「保存」按钮一致，避免生成失败时丢失输入）；
+     * 收集全量客户与已拍摄客户记录（全量清单传入 AI 上下文，已拍摄清单用于模板填充）；
+     * 读取走访备注；调用 AI 生成报表（携带 specialLog 与全量客户清单）；
+     * 校验 AI 是否参考了走访备注；填充模板，得到输出文件路径；
+     * 将路径转为 [File]，记录 file + fileSize 到 Success 状态。
      *
      * @param customers 所有客户列表
      * @param excelUriMd5 Excel URI 的 MD5
@@ -109,14 +106,14 @@ class ReportViewModel @Inject constructor(
             _progressText.value = "正在收集拍摄记录..."
 
             try {
-                // 0. 先持久化特殊日志（无论是否为空都覆盖保存，保持与「保存」按钮语义一致）
+                // 生成前先持久化特殊日志——无论是否为空都覆盖保存，保持与「保存」按钮语义一致
                 val normalizedLog = specialLog?.trim().orEmpty()
                 runCatching {
                     specialLogRepository.saveSpecialLog(excelUriMd5, normalizedLog)
                     _specialLog.value = normalizedLog
                 }.onFailure { Timber.w(it, "生成前保存特殊日志失败") }
 
-                // 1. 收集全量客户与已拍摄客户记录
+                // 收集全量客户与已拍摄客户记录
                 val allProgress = progressRepository.getAllProgress()
                 val visitedRecords = mutableListOf<Pair<CustomerRow, PhotoRecord>>()
                 // 全量客户清单（含未拍摄），传入 AI 上下文以便区分已拍摄/未拍摄
@@ -140,13 +137,11 @@ class ReportViewModel @Inject constructor(
 
                 _progressText.value = "共 ${visitedRecords.size} 个已拍摄客户（全量 ${allRecords.size} 个），正在调用 AI..."
 
-                // 2. 获取 batch_marked
                 val batchMarkedKeys = progressRepository.getBatchMarkedKeys()
                 val batchMarkedCount = visitedRecords.count { (row, _) ->
                     batchMarkedKeys.contains(row.progressKey)
                 }
 
-                // 3. 获取 visit_note
                 val visitNote = visitNoteRepository.getVisitNote(excelUriMd5)
 
                 // 4. 调用 AI 生成报表（携带 specialLog，全量客户清单作为上下文）
@@ -167,14 +162,12 @@ class ReportViewModel @Inject constructor(
 
                 _progressText.value = "正在填充报表模板..."
 
-                // 6. 填充模板
                 val outputPath = reportTemplateFiller.fillTemplate(
                     records = records,
                     routeName = routeName,
                     batchMarkedCount = batchMarkedCount
                 )
 
-                // 7. 转为 File，记录 file + fileSize
                 val outputFile = File(outputPath)
                 val fileSize = if (outputFile.exists()) outputFile.length() else 0L
 

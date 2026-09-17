@@ -48,12 +48,12 @@ import kotlin.math.abs
  * 选择焦距最短的物理子相机，或回退到独立的 logical camera id，以实现真正的超广角拍摄。
  *
  * 广角检测采用双策略以最大化 Mate70 兼容性（优先独立逻辑 ID，回退物理子相机）：
- * 1. 独立逻辑 ID 策略：扫描所有 logical camera id，若存在比主摄焦距更短的独立 logical camera，
- *    则 [toggleWideAngle] 时直接 openCamera 该 id（不走 setPhysicalCameraId）。该策略在 Mate70
- *    上更稳定，命中后即跳过策略 2。
- * 2. 物理子相机策略：当 logical camera 暴露 >=2 个 physicalCameraId 时，选取焦距最短者，
- *    通过 [OutputConfiguration.setPhysicalCameraId] 让 logical camera 从该物理子相机取流。
- *    仅当策略 1 未命中时回退使用（部分机型 setPhysicalCameraId 会话配置失败）。
+ * - 独立逻辑 ID 策略：扫描所有 logical camera id，若存在比主摄焦距更短的独立 logical camera，
+ *   则 [toggleWideAngle] 时直接 openCamera 该 id（不走 setPhysicalCameraId）。该策略在 Mate70
+ *   上更稳定，命中后即跳过物理子相机策略。
+ * - 物理子相机策略：当 logical camera 暴露 >=2 个 physicalCameraId 时，选取焦距最短者，
+ *   通过 [OutputConfiguration.setPhysicalCameraId] 让 logical camera 从该物理子相机取流。
+ *   仅当独立逻辑 ID 策略未命中时回退使用（部分机型 setPhysicalCameraId 会话配置失败）。
  *
  * 线程模型：所有 Camera2 回调运行在后台 [bgHandler]；MutableStateFlow 线程安全，可在后台线程更新。
  */
@@ -174,8 +174,6 @@ class Camera2CameraEngine @Inject constructor(
         }
     }
 
-    // ===================== CameraEngine 接口实现 =====================
-
     @SuppressLint("MissingPermission")
     override fun bind(container: FrameLayout, lifecycleOwner: LifecycleOwner) {
         val texture = TextureView(container.context)
@@ -208,7 +206,6 @@ class Camera2CameraEngine @Inject constructor(
                 override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
                 override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
             }
-            // SurfaceTexture 已可用则立即建会话
             if (texture.isAvailable) {
                 createSession()
             }
@@ -288,12 +285,10 @@ class Camera2CameraEngine @Inject constructor(
         sessionRebuilding = true
         try {
             isWideActive = !isWideActive
-            // 开启广角时标记 pendingWideToggle，供 onConfigureFailed 回滚；关闭时保持 false（成功/失败时已清）
             if (isWideActive) pendingWideToggle = true
             _zoomInfo.value = _zoomInfo.value.copy(isWideAngleActive = isWideActive)
 
             if (wideIsSeparateLogicalId) {
-                // 独立 logical camera：关闭当前设备，openCamera 目标 id
                 try { cameraDevice?.close() } catch (e: Exception) { Timber.w(e, "关闭当前相机设备失败") }
                 cameraDevice = null
                 captureSession?.let { runCatching { it.close() } }
@@ -372,8 +367,6 @@ class Camera2CameraEngine @Inject constructor(
         }
     }
 
-    // ===================== 内部实现 =====================
-
     /**
      * 确保后台 HandlerThread 存活：release() 后再次 bind 时重启线程并重建 [bgHandler]。
      * 引擎为 @Singleton，相机界面可重入，故需此兜底。
@@ -437,12 +430,10 @@ class Camera2CameraEngine @Inject constructor(
             }
         }
 
-        // 主摄焦距（用于独立逻辑 ID 回退比对）
         val mainMinFocal = currentCharacteristics
             ?.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
             ?.minOrNull() ?: Float.MAX_VALUE
 
-        // 策略 1：独立 logical camera id（任意 API，焦距比主摄更短）—— 优先策略，Mate70 上更稳定
         // 先尝试独立逻辑 id，命中即跳过物理子相机策略，避免 setPhysicalCameraId 在 Mate70 上 onConfigureFailed
         for (id in cm.cameraIdList) {
             if (id == logicalCameraId) continue
@@ -463,7 +454,6 @@ class Camera2CameraEngine @Inject constructor(
             }
         }
 
-        // 策略 2：物理子相机（API 28+）—— 仅当独立逻辑策略未命中时回退
         if (widePhysicalId == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val physicalIds = currentCharacteristics?.getPhysicalCameraIds()
             if (physicalIds != null && physicalIds.size >= 2) {
@@ -483,7 +473,6 @@ class Camera2CameraEngine @Inject constructor(
                     }
                 }
                 if (bestPhysicalId == null) {
-                    // 焦距读取失败：取第一个非默认物理子相机作为兜底
                     bestPhysicalId = physicalIds.firstOrNull()
                 }
                 if (bestPhysicalId != null) {
@@ -623,14 +612,12 @@ class Camera2CameraEngine @Inject constructor(
             widePhysicalId != null &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
 
-        // logical camera 的尺寸候选（非物理子相机分支沿用）
         val logicalJpegSize = jpegSize ?: Size(1920, 1440)
         val logicalPreviewSize = previewSize ?: jpegSize ?: Size(1920, 1440)
         var pvSize = logicalPreviewSize
         var jSize = logicalJpegSize
 
-        // 物理 sub-camera 取流时，logical camera 的 jpegSize/previewSize 未必被物理传感器支持，
-        // 需以物理子相机的 SCALER_STREAM_CONFIGURATION_MAP 为准，取两者公共支持的尺寸，避免 onConfigureFailed。
+        // 物理子相机的流配置可能与 logical 不同，取两者公共支持的尺寸，避免 onConfigureFailed
         if (usePhysicalSubCamera) {
             val wideId = widePhysicalId
             if (wideId != null) {
@@ -645,14 +632,12 @@ class Camera2CameraEngine @Inject constructor(
                         val logJpeg = lMap.getOutputSizes(ImageFormat.JPEG)?.toSet() ?: emptySet()
                         val logPreview = lMap.getOutputSizes(SurfaceTexture::class.java)?.toSet() ?: emptySet()
 
-                        // JPEG：公共 4:3 最大 → 保守尺寸（需物理支持）→ 物理 4:3 最大 → 沿用 logical
                         val commonJpeg = physJpeg.intersect(logJpeg)
                         jSize = pickJpegSize(commonJpeg.toTypedArray())
                             ?: listOf(Size(1280, 960), Size(1920, 1080)).firstOrNull { physJpeg.contains(it) }
                             ?: pickJpegSize(physJpeg.toTypedArray())
                             ?: logicalJpegSize
 
-                        // Preview：公共 4:3 最大 → 保守尺寸（需物理支持）→ 物理 4:3 最大 → 沿用 logical
                         val commonPreview = physPreview.intersect(logPreview)
                         pvSize = pickPreviewSize(commonPreview.toTypedArray())
                             ?: listOf(Size(1920, 1080), Size(1280, 960)).firstOrNull { physPreview.contains(it) }
@@ -675,14 +660,12 @@ class Camera2CameraEngine @Inject constructor(
             val preview = Surface(st)
             previewSurface = preview
 
-            // 重建 ImageReader（尺寸可能因相机切换而变化）
             imageReader?.let { runCatching { it.close() } }
             imageReader = ImageReader.newInstance(jSize.width, jSize.height, ImageFormat.JPEG, 2)
             imageReader?.setOnImageAvailableListener({ reader -> handleImageAvailable(reader) }, bgHandler)
 
             val sessionStateCallback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
-                    // 广角会话配置成功：清除待回滚标记
                     pendingWideToggle = false
                     captureSession = session
                     try {
@@ -701,13 +684,10 @@ class Camera2CameraEngine @Inject constructor(
                     captureSession = null
                     _cameraReady.value = false
                     if (pendingWideToggle) {
-                        // 广角会话配置失败：回滚到主摄普通会话，避免预览永久卡死
                         pendingWideToggle = false
                         isWideActive = false
                         _zoomInfo.value = _zoomInfo.value.copy(isWideAngleActive = false)
                         Timber.w("广角会话 onConfigureFailed，回滚到普通会话")
-                        // 若当前是物理子相机策略（设备未变），直接重建普通会话
-                        // 若是独立 logical 策略，wideId 打开失败 → 重新打开主摄 logicalCameraId
                         // 防递归：pendingWideToggle 已置 false，若本次普通会话再失败不会二次回滚
                         if (wideIsSeparateLogicalId) {
                             runCatching { cameraDevice?.close() }
@@ -763,7 +743,6 @@ class Camera2CameraEngine @Inject constructor(
         val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
         request.addTarget(preview)
         applyZoomToRequest(request)
-        // 预览补光：torch 开启则 FLASH_MODE_TORCH，否则 AE 自动 + 关闭闪光
         if (torchEnabled && torchSupported) {
             request.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
             request.set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_TORCH)
@@ -825,8 +804,6 @@ class Camera2CameraEngine @Inject constructor(
     private fun calculateJpegOrientation(): Int {
         val sensorOrientation = currentCharacteristics
             ?.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
-        // deviceOrientationDegrees 来自 OE，为 CW 约定；Camera2 JPEG 公式需要 CCW。
-        // 转换：CCW = (360 - CW) % 360；代入公式 (sensor + CCW) % 360 等价于 (sensor - CW + 360) % 360。
         return (sensorOrientation - deviceOrientationDegrees + 360) % 360
     }
 

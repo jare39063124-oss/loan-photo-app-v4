@@ -14,11 +14,9 @@ import javax.inject.Inject
  * progress.json 文件 IO 数据源。
  *
  * 负责原始 [Map] 读写与原子落盘，不感知业务语义：
- * - 文件路径: `context.getExternalFilesDir(null)/progress.json`
- * - 原子写: 写到 `.tmp` 后 [Files.move]([StandardCopyOption.ATOMIC_MOVE])
  * - 解析失败时返回空 Map（不抛异常，避免阻断业务）
  *
- * 顶层结构兼容 Kivy v3.22.24：
+ * 顶层结构：
  * ```json
  * {
  *   "_row_remarks": {"0": "..."},
@@ -47,7 +45,7 @@ class ProgressFileDataSource @Inject constructor(
     val file: File
         get() = File(context.getExternalFilesDir(null), PROGRESS_FILE_NAME)
 
-    /** APP_DIR（外存私有目录），用于路径迁移。 */
+    /** 外存私有根目录，失效照片路径在此目录下按文件名重新定位。 */
     val appDir: File
         get() = context.getExternalFilesDir(null) ?: context.filesDir
 

@@ -79,8 +79,8 @@ fun ReportScreen(
     val sharedVm: NavSharedViewModel = hiltViewModel()
     val context = LocalContext.current
 
-    // 输入框当前内容（与已保存的 specialLog 解耦：保存按钮不重置输入，
-    // 取消按钮仅清空当前输入框，不删除已持久化的内容）
+    // 特殊日志输入框状态与已持久化内容解耦——保存按钮不重置输入，
+    // 取消按钮仅清空当前输入框、不影响已保存内容
     var specialLogInput by rememberSaveable { mutableStateOf("") }
 
     // 线路名称输入框（用于生成日报表文件名，与原 Excel 文件名解耦）
@@ -178,7 +178,7 @@ fun ReportScreen(
                 }
 
                 is ReportViewModel.ReportState.Success -> {
-                    // 仅渲染 records 预览（可选保留），结果弹窗在下方独立展示
+                    // 上方仅渲染结果预览，导出与分享操作在下方结果弹窗中独立展示
                     ReportSuccessContent(s.records)
                     ExportResultDialog(
                         file = s.file,

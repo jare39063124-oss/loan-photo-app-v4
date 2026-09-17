@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.banktool.loanphoto.data.datasource.ColumnField
+import com.banktool.loanphoto.data.datasource.ExcelReadResult
 import com.banktool.loanphoto.data.datasource.ExcelWriter
 import com.banktool.loanphoto.data.export.ExportDimension
 import com.banktool.loanphoto.data.export.ExportFormat
@@ -43,19 +45,30 @@ data class RecentFileItem(
 )
 
 /**
+ * 列映射待确认状态：文件无表头且未确认过列映射时，暂存样例与文件信息，
+ * 由 UI 层弹出 [com.banktool.loanphoto.ui.customer.components.ColumnMappingDialog]。
+ */
+data class PendingColumnMapping(
+    val uri: String,
+    val fileName: String,
+    val excelUriMd5: String,
+    val columnSamples: List<String>,
+)
+
+/**
  * 客户清单列表 ViewModel。
  *
  * 职责：
- * 1. 加载 Excel 并按地址排序
- * 2. 实时搜索过滤（保存匹配全集 [UiState.filteredIndices]）
- * 3. 全选作用域为 filteredIndices 全集（非仅可见行）
- * 4. 单行反选同步表头 CheckBox 状态
- * 5. 查询每个 progressKey 的照片数
- * 6. 管理最近文件列表（含数据指示器）
- * 7. 行级备注编辑（_row_remarks）
- * 8. 同类型代表性户型标记（batch_marked）
- * 9. 搜索历史（最近 5 条，SharedPreferences，一/二级搜索栏共用）
- * 10. 条目全量编辑（updateCustomerRow：Excel 整行回写 + _row_remarks 同步 + 内存刷新）
+ * - 加载 Excel 并按地址排序（支持列映射：无表头文件经用户确认后按映射解析/写回）
+ * - 实时搜索过滤（保存匹配全集 [UiState.filteredIndices]）
+ * - 全选作用域为 filteredIndices 全集（非仅可见行）
+ * - 单行反选同步表头 CheckBox 状态
+ * - 查询每个 progressKey 的照片数
+ * - 管理最近文件列表（含数据指示器）
+ * - 行级备注编辑（_row_remarks_<uriMd5>，按文件隔离）
+ * - 同类型代表性户型标记（batch_marked）
+ * - 搜索历史（最近 5 条，SharedPreferences，一/二级搜索栏共用）
+ * - 条目全量编辑（updateCustomerRow：Excel 整行回写 + _row_remarks 同步 + 内存刷新）
  */
 @HiltViewModel
 class CustomerListViewModel @Inject constructor(
@@ -74,8 +87,12 @@ class CustomerListViewModel @Inject constructor(
      *
      * - [filteredIndices] 保存匹配搜索的 rowIndex 全集（不是列表位置，而是 [CustomerRow.rowIndex]）
      * - [selectedRows] 保存被选中的 rowIndex 集合（与 filteredIndices 同维度，确保跨排序稳定）
-     * - [rowRemarks] 行级备注 Map（key=行号字符串），来自 progress.json 的 _row_remarks
+     * - [rowRemarks] 行级备注 Map（key=行号字符串），来自 progress.json 的
+     *   `_row_remarks_<uriMd5>`（按文件隔离）
      * - [batchMarkedKeys] 已标记为同类型代表性户型的 progressKey 集合
+     * - [searchHistory] 一/二级搜索栏共用的历史关键词（最新在前，最多 5 条）
+     * - [resolvedColumnMap] 当前文件生效的列映射（按物理列索引），编辑/备注写回时使用
+     * - [pendingColumnMapping] 非空表示文件无表头且未确认列映射，UI 层应弹映射确认弹窗
      */
     data class UiState(
         val isLoading: Boolean = false,
@@ -91,6 +108,7 @@ class CustomerListViewModel @Inject constructor(
         val secondSearchQuery: String = "",
         val excelUri: String = "",
         val excelFileName: String = "",
+        val excelUriMd5: String = "",
         val error: String? = null,
         val recentFiles: List<RecentFileItem> = emptyList(),
         val showRecentFilesSheet: Boolean = false,
@@ -99,8 +117,9 @@ class CustomerListViewModel @Inject constructor(
         val batchMarkedKeys: Set<String> = emptySet(),
         val editingRemarkRowIndex: Int? = null,
         val message: String? = null,
-        // 搜索历史（一/二级搜索栏共用，最新在前，最多 5 条）
         val searchHistory: List<String> = emptyList(),
+        val resolvedColumnMap: List<ColumnField> = ColumnField.DEFAULT,
+        val pendingColumnMapping: PendingColumnMapping? = null,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -132,66 +151,66 @@ class CustomerListViewModel @Inject constructor(
     }
 
     /**
-     * 加载 Excel 文件。
+     * 加载并解析 [uri] 对应的 Excel 文件（含列映射决策）。
      *
-     * 步骤：
-     * 1. 调用 [ExcelRepository.readExcel] 解析
-     * 2. 按 [SortUtil.addressSortKey] 排序（addrGeneral + addrDetail）
-     * 3. 查询每个 progressKey 的照片数
-     * 4. 加载行级备注和同类型标记
-     * 5. 重置搜索/选中状态，filteredIndices 默认为全集
-     * 6. 写入最近文件
+     * 流程：
+     * 1. 查询持久化列映射（excel_data_index.json 的 column_map）：
+     *    有 → 直接注入解析（不探测表头、不弹窗），带表头标记决定起始行
+     * 2. 无持久化映射 → 先探测解析：
+     *    - parseHeader 命中表头 → 照旧渲染，并把 resolvedColumnMap 持久化
+     *      （编辑写回与解析对称）
+     *    - 未命中 → 记录 [UiState.pendingColumnMapping]（样例+文件信息），
+     *      列表暂不渲染，UI 层弹列映射确认弹窗
+     * 3. 用户确认映射后走 [confirmColumnMapping]：saveColumnMap + 按映射重新解析 → 渲染列表
+     *
+     * 其余逻辑与原有行为一致：按 [SortUtil.addressSortKey] 排序、查询照片数/行备注/
+     * 批量标记、重置搜索/选中状态、写入最近文件。
      */
     fun loadExcel(uri: String, fileName: String = "") {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, error = null) }
+            _uiState.update { it.copy(isLoading = true, error = null, pendingColumnMapping = null) }
             try {
-                val rawRows = excelRepository.readExcel(uri)
-                val sorted = withContext(Dispatchers.Default) {
-                    // 预计算排序键，避免重复调用 addressSortKey
-                    rawRows
-                        .map { it to SortUtil.addressSortKey(it.addrGeneral + it.addrDetail) }
-                        .sortedWith(
-                            compareBy(
-                                { pair -> pair.second.first },
-                                { pair -> pair.second.second.first },
-                                { pair -> pair.second.second.second },
-                                { pair -> pair.first.rowIndex },
-                            ),
-                        )
-                        .map { it.first }
-                }
-                val photoStats = loadPhotoStats(sorted)
-                val rowRemarks = progressRepository.getRowRemarks()
-                val batchMarkedKeys = progressRepository.getBatchMarkedKeys()
+                val md5 = ProgressKeyUtil.excelUriMd5(uri)
                 val resolvedName = fileName.ifBlank {
                     recentFilesStorage.getRecentFiles().firstOrNull { it.uri == uri }?.fileName ?: "未知文件"
                 }
-                val md5 = ProgressKeyUtil.excelUriMd5(uri)
-                photoSessionHolder.setExcelInfo(uri, resolvedName, md5)
-                // 同步全量客户行到 PhotoSessionHolder，供 ReportScreen 等非相机路径使用。
-                // 否则用户直接点「AI 日报表」时 sharedVm.rows 为空（仅相机导航路径会 setPhotoRows）。
-                photoSessionHolder.setPhotoRows(sorted)
-                _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        rows = sorted,
-                        filteredIndices = sorted.map { row -> row.rowIndex },
-                        selectedRows = emptySet(),
-                        photoCounts = photoStats.counts,
-                        photoTypeCounts = photoStats.typeCounts,
-                        excelUri = uri,
-                        excelFileName = resolvedName,
-                        searchQuery = "",
-                        secondSearchQuery = "",
-                        secondSearchField = SearchField.SERIAL,
-                        error = null,
-                        rowRemarks = rowRemarks,
-                        batchMarkedKeys = batchMarkedKeys,
+                val savedMap = excelDataIndexRepository.getColumnMap(md5)
+                val result: ExcelReadResult
+                if (savedMap != null) {
+                    val skipFirstRow = excelDataIndexRepository.hasHeaderRow(md5)
+                    Timber.i(
+                        "loadExcel: 使用持久化列映射 %s, skipFirstRow=%s, uriMd5=%s",
+                        savedMap, skipFirstRow, md5,
                     )
+                    result = excelRepository.readExcel(uri, savedMap, skipFirstRow)
+                } else {
+                    val detected = excelRepository.readExcel(uri)
+                    if (detected.headerMatched) {
+                        // 表头命中也持久化，保证后续编辑写回与解析对称
+                        excelDataIndexRepository.saveColumnMap(md5, detected.resolvedColumnMap, hasHeader = true)
+                        Timber.i(
+                            "loadExcel: 表头识别命中，持久化列映射 %s, uriMd5=%s",
+                            detected.resolvedColumnMap, md5,
+                        )
+                        result = detected
+                    } else {
+                        // 无表头且无映射：记录待确认状态，列表暂不渲染
+                        Timber.i("loadExcel: 未识别到表头，待用户确认列映射, uriMd5=%s", md5)
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                pendingColumnMapping = PendingColumnMapping(
+                                    uri = uri,
+                                    fileName = resolvedName,
+                                    excelUriMd5 = md5,
+                                    columnSamples = detected.rawFirstRowSamples,
+                                ),
+                            )
+                        }
+                        return@launch
+                    }
                 }
-                recentFilesStorage.addRecent(uri, resolvedName)
-                loadRecentFiles()
+                applyLoadedExcel(uri, resolvedName, md5, result)
             } catch (e: Exception) {
                 Timber.e(e, "加载 Excel 失败: %s", uri)
                 _uiState.update {
@@ -202,6 +221,99 @@ class CustomerListViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * 用户在列映射确认弹窗点击「确认」：持久化映射并按映射重新解析渲染。
+     *
+     * 注意：列映射改变会改变 borrower/addr 取值 → progressKey 变化 →
+     * 已拍进度关联随之变化（预期行为：映射正确后进度才关联正确），无需特殊处理。
+     */
+    fun confirmColumnMapping(mapping: List<ColumnField>) {
+        val pending = _uiState.value.pendingColumnMapping ?: return
+        viewModelScope.launch {
+            try {
+                excelDataIndexRepository.saveColumnMap(pending.excelUriMd5, mapping, hasHeader = false)
+                Timber.i(
+                    "confirmColumnMapping: 保存列映射 %s, uriMd5=%s（progressKey 将随映射变化）",
+                    mapping, pending.excelUriMd5,
+                )
+                val result = excelRepository.readExcel(pending.uri, mapping, skipFirstRow = false)
+                applyLoadedExcel(pending.uri, pending.fileName, pending.excelUriMd5, result)
+            } catch (e: Exception) {
+                Timber.e(e, "应用列映射失败")
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        error = e.message ?: "应用列映射失败",
+                        pendingColumnMapping = null,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * 用户在列映射确认弹窗点击「取消」：中断导入，回到空列表状态。
+     */
+    fun cancelColumnMapping() {
+        _uiState.update { it.copy(pendingColumnMapping = null, isLoading = false) }
+    }
+
+    /**
+     * 渲染解析结果：排序、照片统计、会话信息、UI 状态与最近文件（loadExcel/confirmColumnMapping 共用）。
+     */
+    private suspend fun applyLoadedExcel(
+        uri: String,
+        fileName: String,
+        md5: String,
+        result: ExcelReadResult,
+    ) {
+        val rawRows = result.rows
+        val sorted = withContext(Dispatchers.Default) {
+            // 预计算排序键，避免重复调用 addressSortKey
+            rawRows
+                .map { it to SortUtil.addressSortKey(it.addrGeneral + it.addrDetail) }
+                .sortedWith(
+                    compareBy(
+                        { pair -> pair.second.first },
+                        { pair -> pair.second.second.first },
+                        { pair -> pair.second.second.second },
+                        { pair -> pair.first.rowIndex },
+                    ),
+                )
+                .map { it.first }
+        }
+        val photoStats = loadPhotoStats(sorted)
+        val rowRemarks = progressRepository.getRowRemarks(md5)
+        val batchMarkedKeys = progressRepository.getBatchMarkedKeys()
+        photoSessionHolder.setExcelInfo(uri, fileName, md5)
+        // 用户可能不经过拍照直接进入「AI 日报表」等报表路径，
+        // 此处预填共享 VM 的行集合，否则报表页拿到的数据为空。
+        photoSessionHolder.setPhotoRows(sorted)
+        _uiState.update {
+            it.copy(
+                isLoading = false,
+                rows = sorted,
+                filteredIndices = sorted.map { row -> row.rowIndex },
+                selectedRows = emptySet(),
+                photoCounts = photoStats.counts,
+                photoTypeCounts = photoStats.typeCounts,
+                excelUri = uri,
+                excelFileName = fileName,
+                excelUriMd5 = md5,
+                resolvedColumnMap = result.resolvedColumnMap,
+                pendingColumnMapping = null,
+                searchQuery = "",
+                secondSearchQuery = "",
+                secondSearchField = SearchField.SERIAL,
+                error = null,
+                rowRemarks = rowRemarks,
+                batchMarkedKeys = batchMarkedKeys,
+            )
+        }
+        recentFilesStorage.addRecent(uri, fileName)
+        loadRecentFiles()
     }
 
     /**
@@ -370,7 +482,7 @@ class CustomerListViewModel @Inject constructor(
             _uiState.update { it.copy(isRefreshingCounts = true) }
             try {
                 val stats = loadPhotoStats(current.rows)
-                val rowRemarks = progressRepository.getRowRemarks()
+                val rowRemarks = progressRepository.getRowRemarks(current.excelUriMd5)
                 val batchMarkedKeys = progressRepository.getBatchMarkedKeys()
                 _uiState.update {
                     val filtered = applyTwoLevelFilter(
@@ -446,35 +558,39 @@ class CustomerListViewModel @Inject constructor(
     }
 
     /**
-     * 保存行级备注到 progress.json 的 _row_remarks，并回写到 Excel F 列。
+     * 保存行级备注到 progress.json 的 `_row_remarks_<uriMd5>`，并回写到 Excel 备注映射列。
      *
-     * - 先写入内部存储（progress.json 的 _row_remarks）
-     * - 若 [UiState.excelUri] 非空，额外调用 [ExcelWriter.writeRemarksToExcel] 回写 Excel F 列
+     * - 先写入内部存储（progress.json 的 `_row_remarks_<uriMd5>`，按文件隔离）
+     * - 若 [UiState.excelUri] 非空且列映射中存在备注列，额外调用
+     *   [ExcelWriter.writeRemarksToExcel] 回写到映射列（默认 F 列）
+     * - 列映射无备注列时跳过 Excel 回写（仅保存在 App 内，不提示错误）
      * - Excel 写入失败时不阻断内部存储保存，通过 [UiState.error] 提示用户
      * - Excel 写入成功时不额外提示，保持原有 "备注已保存" message
      */
     fun saveRowRemark(rowIndex: Int, content: String) {
         viewModelScope.launch {
             try {
-                // 1. 保存到内部存储 progress.json 的 _row_remarks
-                progressRepository.saveRowRemark(rowIndex, content)
+                val md5 = _uiState.value.excelUriMd5
+                progressRepository.saveRowRemark(md5, rowIndex, content)
 
-                // 2. 额外回写到 Excel F 列（若 excelUri 可用）
                 val currentUri = uiState.value.excelUri
+                val remarkColumn = uiState.value.resolvedColumnMap.indexOf(ColumnField.REMARK)
                 var excelWriteOk = true
-                if (currentUri.isNotBlank()) {
+                if (currentUri.isNotBlank() && remarkColumn >= 0) {
                     try {
                         excelWriteOk = excelWriter.writeRemarksToExcel(
                             Uri.parse(currentUri),
                             mapOf(rowIndex to content),
+                            remarkColumn,
                         )
                     } catch (e: Exception) {
                         Timber.e(e, "备注回写 Excel 失败, rowIndex=%d", rowIndex)
                         excelWriteOk = false
                     }
+                } else if (remarkColumn < 0) {
+                    Timber.w("列映射无备注列，跳过 Excel 备注回写, uriMd5=%s", md5)
                 }
 
-                // 3. 更新 UI 状态
                 _uiState.update { current ->
                     val newRemarks = current.rowRemarks.toMutableMap()
                     if (content.isBlank()) {
@@ -546,7 +662,7 @@ class CustomerListViewModel @Inject constructor(
     /**
      * 在当前 Excel 末尾追加一行查勘条目，并刷新列表。
      *
-     * 列映射：A=serial, B=borrower, C=address。
+     * 列位置按当前文件 resolvedColumnMap 取 序号/客户名/地址概 对应列（无映射时 A/B/C）。
      *
      * - 成功后重新调用 [loadExcel] 拉取最新数据
      * - 失败时通过 [UiState.error] 提示用户确认文件可写
@@ -556,9 +672,20 @@ class CustomerListViewModel @Inject constructor(
         if (currentUri.isBlank()) return
         viewModelScope.launch {
             try {
-                val newRowIndex = excelRepository.appendRow(currentUri, serial, borrower, address)
+                val colMap = uiState.value.resolvedColumnMap
+                val serialColumn = colMap.indexOf(ColumnField.SERIAL).takeIf { it >= 0 } ?: 0
+                val borrowerColumn = colMap.indexOf(ColumnField.BORROWER).takeIf { it >= 0 } ?: 1
+                val addressColumn = colMap.indexOf(ColumnField.ADDR_GENERAL).takeIf { it >= 0 } ?: 2
+                val newRowIndex = excelRepository.appendRow(
+                    currentUri,
+                    serial,
+                    borrower,
+                    address,
+                    serialColumn,
+                    borrowerColumn,
+                    addressColumn,
+                )
                 if (newRowIndex >= 0) {
-                    // 重新加载 Excel 刷新列表
                     loadExcel(currentUri, uiState.value.excelFileName)
                     _uiState.update { it.copy(message = "已添加条目") }
                 } else {
@@ -578,33 +705,28 @@ class CustomerListViewModel @Inject constructor(
      *
      * [updated] 由 EditEntryDialog 构造（copy 保留 rowIndex/progressKey），落盘策略沿用
      * 行级备注的双写机制并扩展为整行更新：
-     * 1. Excel 整行回写 A-F 列（[ExcelWriter.updateRowToExcel]）；
-     * 2. progress.json 的 _row_remarks 同步备注（[ProgressRepository.saveRowRemark]），
-     *    与「编辑备注」功能保持一致（显示时 _row_remarks 优先于 Excel F 列）；
-     * 3. 内存刷新 [UiState.rows]（StateFlow，列表 UI 自动刷新）与 [PhotoSessionHolder.rows]
-     *    （按 rowIndex 替换）。progressKey/rowIndex 保持不变，拍照进度关联不丢。
+     * - Excel 整行回写（[ExcelWriter.updateRowToExcel]），列号按当前文件
+     *   [UiState.resolvedColumnMap] 构建：字段有对应物理列才写（IGNORE 列/无对应列不写）
+     * - progress.json 的 `_row_remarks_<uriMd5>` 同步备注（[ProgressRepository.saveRowRemark]），
+     *   与「编辑备注」功能保持一致（显示时 _row_remarks 优先于 Excel 备注列）
+     * - 内存刷新 [UiState.rows]（StateFlow，列表 UI 自动刷新）与 [PhotoSessionHolder.rows]
+     *   （按 rowIndex 替换）。progressKey/rowIndex 保持不变，拍照进度关联不丢。
      *
      * Excel 写入失败不阻断内存更新，通过 [UiState.error] 提示（与 saveRowRemark 行为一致）。
      */
     fun updateCustomerRow(updated: CustomerRow) {
         viewModelScope.launch {
             try {
-                // 1. Excel 整行回写（A=序号 B=客户名 C=地址概 D=地址详 E=性质 F=备注）
+                // 按 resolvedColumnMap 构建写回值：字段→对应物理列（IGNORE 列/无对应列不写）
                 val currentUri = uiState.value.excelUri
                 var excelWriteOk = true
                 if (currentUri.isNotBlank()) {
+                    val values = buildRowWriteValues(uiState.value.resolvedColumnMap, updated)
                     excelWriteOk = runCatching {
                         excelWriter.updateRowToExcel(
                             Uri.parse(currentUri),
                             updated.rowIndex,
-                            mapOf(
-                                0 to updated.serial,
-                                1 to updated.borrower,
-                                2 to updated.addrGeneral,
-                                3 to updated.addrDetail,
-                                4 to updated.propertyType,
-                                5 to updated.remark,
-                            ),
+                            values,
                         )
                     }.getOrDefault(false)
                     if (!excelWriteOk) {
@@ -612,10 +734,10 @@ class CustomerListViewModel @Inject constructor(
                     }
                 }
 
-                // 2. 行级备注同步到 progress.json（_row_remarks 显示优先级高于 Excel F 列）
-                progressRepository.saveRowRemark(updated.rowIndex, updated.remark)
+                // 行级备注展示时优先于表格备注列，此处双写保持两处一致
+                progressRepository.saveRowRemark(_uiState.value.excelUriMd5, updated.rowIndex, updated.remark)
 
-                // 3. 内存刷新：UiState.rows + rowRemarks（rows 为 StateFlow，列表自动刷新）
+                // 内存刷新 rows + rowRemarks（rows 为 StateFlow，列表自动刷新）
                 _uiState.update { current ->
                     val newRows = current.rows.map { row ->
                         if (row.rowIndex == updated.rowIndex) updated else row
@@ -642,7 +764,7 @@ class CustomerListViewModel @Inject constructor(
                     }
                 }
 
-                // 4. 同步 PhotoSessionHolder（rows 为当前会话行集合，按 rowIndex 替换）
+                // 当前会话若已持有行集合，按 rowIndex 原位替换
                 val holderRows = photoSessionHolder.rows
                 if (holderRows.any { it.rowIndex == updated.rowIndex }) {
                     photoSessionHolder.setPhotoRows(
@@ -661,13 +783,9 @@ class CustomerListViewModel @Inject constructor(
     // ---- 照片导出 ----
 
     /**
-     * 触发照片导出。
-     *
-     * 流程：
-     * 1. 状态切到 [ExportState.Exporting]，UI 显示进度弹窗
-     * 2. 调用 [PhotoExporter.exportPhotos] 在 IO 线程执行
-     * 3. 成功后状态切到 [ExportState.Done]，UI 负责弹 Toast + 分享
-     * 4. 失败时状态切到 [ExportState.Error]
+     * 触发照片导出：调用 [PhotoExporter.exportPhotos] 在 IO 线程执行，
+     * 进度经 [ExportState.Exporting] 上报；成功转 [ExportState.Done]（UI 弹 Toast + 分享），
+     * 失败转 [ExportState.Error]。
      *
      * 调用前需保证 [uiState] 中已有客户行（rows 非空），否则直接报错。
      *
@@ -716,6 +834,28 @@ class CustomerListViewModel @Inject constructor(
     // ---- 内部辅助 ----
 
     /**
+     * 按 [colMap] 构建整行写回值（[ExcelWriter.updateRowToExcel] 的 values）：
+     * 字段→其映射的物理列号；IGNORE 列不写、无对应列的字段不写。
+     * 同一字段映射到多列时取首次出现的列（先到优先，与解析逻辑一致）。
+     */
+    private fun buildRowWriteValues(colMap: List<ColumnField>, row: CustomerRow): Map<Int, String> {
+        val fieldValues = listOf(
+            ColumnField.SERIAL to row.serial,
+            ColumnField.BORROWER to row.borrower,
+            ColumnField.ADDR_GENERAL to row.addrGeneral,
+            ColumnField.ADDR_DETAIL to row.addrDetail,
+            ColumnField.PROPERTY_TYPE to row.propertyType,
+            ColumnField.REMARK to row.remark,
+        )
+        val out = LinkedHashMap<Int, String>()
+        for ((field, value) in fieldValues) {
+            val idx = colMap.indexOf(field)
+            if (idx >= 0) out[idx] = value
+        }
+        return out
+    }
+
+    /**
      * 加载最近文件并附带数据指示器（通过 [ExcelDataIndexRepository] 查询每个文件的 progressKey 数量）。
      */
     private fun loadRecentFiles() {
@@ -750,9 +890,8 @@ class CustomerListViewModel @Inject constructor(
      * - [counts] 总照片数（key=progressKey）
      * - [typeCounts] 各分类计数（key=progressKey，value=PhotoType→数量）
      *
-     * 优先使用 [PhotoRecord.photoTypes]（v4.0.1 新增，与 photos 平行的类型列表）
-     * 精确计算各分类张数；旧数据（v4.0.0）无 photoTypes 时回退到 [PhotoRecord.types]
-     * presence（每类计数为 1）。
+     * 优先使用 [PhotoRecord.photoTypes]（与 photos 平行的类型列表）精确计算各分类张数；
+     * 记录缺 photoTypes 字段时回退到 [PhotoRecord.types] presence（每类计数为 1）。
      *
      * 一次调用 [ProgressRepository.getAllProgress] 读取全部记录到内存，
      * 循环内仅做 O(1) Map 查找，避免每行重读+重解析整个 progress.json。
@@ -764,7 +903,6 @@ class CustomerListViewModel @Inject constructor(
 
     private suspend fun loadPhotoStats(rows: List<CustomerRow>): PhotoStats =
         withContext(Dispatchers.IO) {
-            // 一次读取全部进度记录，避免每行重读+重解析整个 progress.json（O(N×M) → O(N+M)）
             val allProgress = progressRepository.getAllProgress()
             val counts = HashMap<String, Int>(rows.size)
             val typeCounts = HashMap<String, Map<PhotoType, Int>>(rows.size)
@@ -772,7 +910,6 @@ class CustomerListViewModel @Inject constructor(
                 val record = allProgress[row.progressKey]
                 val photos = record?.photos ?: emptyList()
                 counts[row.progressKey] = photos.size
-                // 优先使用 photoTypes（精确张数），旧数据回退到 types presence（每类 1）
                 val typeMap: Map<PhotoType, Int> = if (!record?.photoTypes.isNullOrEmpty()) {
                     record!!.photoTypes
                         .mapNotNull { name -> name.takeIf { it.isNotBlank() } }
@@ -806,7 +943,6 @@ class CustomerListViewModel @Inject constructor(
     ): List<Int> {
         // 一级过滤
         val firstFiltered = applySingleFilter(rows, firstQuery, firstField, rowRemarks, photoCounts)
-        // 二级过滤：query 为空时跳过，直接返回一级结果
         val finalFiltered = if (secondQuery.isBlank()) {
             firstFiltered
         } else {
@@ -831,7 +967,6 @@ class CustomerListViewModel @Inject constructor(
         rowRemarks: Map<String, String>,
         photoCounts: Map<String, Int>,
     ): List<CustomerRow> {
-        // VISITED/UNVISITED：先按状态过滤，再按文本匹配全量字段
         if (field == SearchField.UNVISITED || field == SearchField.VISITED) {
             val wantVisited = field == SearchField.VISITED
             val statusFiltered = rows.filter { row ->
@@ -842,7 +977,7 @@ class CustomerListViewModel @Inject constructor(
             val keyword = query.trim()
             return statusFiltered.filter { row -> matchAnyField(row, keyword, rowRemarks) }
         }
-        // 普通字段：query 为空时返回全集
+        // 普通字段
         if (query.isBlank()) return rows
         val keyword = query.trim()
         return rows.filter { row -> matchField(row, keyword, field, rowRemarks) }
@@ -881,11 +1016,10 @@ class CustomerListViewModel @Inject constructor(
             SearchField.ADDR -> row.addrGeneral.contains(keyword, ignoreCase = true) ||
                 row.addrDetail.contains(keyword, ignoreCase = true)
             SearchField.REMARK -> {
-                // 查 progress.json 的 _row_remarks[行号] 是否 contains(query)
                 val remark = rowRemarks[row.rowIndex.toString()] ?: row.remark
                 remark.contains(keyword, ignoreCase = true)
             }
-            // VISITED/UNVISITED 的文本匹配由 matchAnyField 处理，此处不应到达
+            // 状态字段的文本匹配已在调用方的全字段匹配逻辑中处理，此分支正常不会进入
             SearchField.UNVISITED, SearchField.VISITED -> false
         }
     }

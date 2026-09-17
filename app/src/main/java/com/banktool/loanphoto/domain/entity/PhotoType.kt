@@ -16,17 +16,14 @@ data class PhotoTypeConfig(
 )
 
 /**
- * 拍照类型枚举（5 种默认类型，对应 Kivy v3.22.24 默认类型集）。
+ * 拍照类型枚举（5 种默认类型）。
  *
- * 保留作为默认值来源与稳定 ID 来源；用户自定义类型不再使用本枚举，而使用 [PhotoTypeConfig]。
+ * 保留作为默认值来源与稳定 ID 来源；用户自定义类型使用 [PhotoTypeConfig]。
  *
  * - [id] 稳定标识（不可变，用于配置持久化）
  * - [displayName] 用于 UI 展示（中文短名），同时用作文件名片段与 progress.json
- *   中 `types` Map 的 key
+ *   中 `types` Map 的 key，types 集合的 key 与该字符串保持一致
  * - [description] 用于辅助提示文案
- *
- * types 集合的 key 与 [displayName] 字符串保持一致，与 progress.json
- * 中 `types` Map 的 key 完全对齐。
  */
 enum class PhotoType(val id: String, val displayName: String, val description: String) {
     DISTANT("distant", "远景", "抵押物外观全景"),

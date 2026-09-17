@@ -15,10 +15,7 @@ import javax.inject.Singleton
 /**
  * Coil [ImageLoader] Hilt Module。
  *
- * - 内存缓存: 256 张 (maxItems)
- * - 磁盘缓存: 100MB
- * - 开启 crossfade
- *
+ * 内存缓存约相当于 256 张缩略图，磁盘缓存 100MB，开启 crossfade，
  * 适用于缩略图列表与全屏预览的快速加载。
  */
 @Module

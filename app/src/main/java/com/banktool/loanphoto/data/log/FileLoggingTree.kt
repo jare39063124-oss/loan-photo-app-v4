@@ -52,7 +52,6 @@ class FileLoggingTree(private val context: Context) : Timber.Tree() {
             writer.write("\n")
             writer.flush()
         } catch (_: Throwable) {
-            // 静默：日志写入失败绝不能反向影响业务
         } finally {
             try {
                 writer?.close()

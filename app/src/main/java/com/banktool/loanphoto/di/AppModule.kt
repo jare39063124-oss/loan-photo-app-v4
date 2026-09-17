@@ -32,10 +32,7 @@ import javax.inject.Singleton
 /**
  * Hilt 全局依赖注入 Module。
  *
- * 提供：
- * - 数据源: [ExcelDataSource]、[ProgressFileDataSource]
- * - 仓库实现: Excel / Progress / CameraSession / VisitNote / SpecialLog / ExcelDataIndex
- * - DataStore Preferences（命名规则配置持久化）
+ * 提供各数据源与仓库实现，以及命名规则配置持久化所需的 DataStore Preferences。
  *
  * [NamingConfigRepository] 与 [NamingRuleGenerator] 通过 @Inject constructor 自动注入，
  * 仅需在此提供 [DataStore] 实例。所有均 @Singleton，仓库绑定到 domain 层接口。

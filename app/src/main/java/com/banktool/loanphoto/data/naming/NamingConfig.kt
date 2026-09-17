@@ -11,12 +11,20 @@ package com.banktool.loanphoto.data.naming
  * @param segment2 第 2 段（默认 [NameSegment.BORROWER]）
  * @param segment3 第 3 段（默认 [NameSegment.ADDRESS]）
  * @param segment4 第 4 段（默认 [NameSegment.NONE]）
+ * @param customText1 段 1 为 [NameSegment.CUSTOM] 时的自定义文本（其它段类型忽略，默认空）
+ * @param customText2 段 2 为 [NameSegment.CUSTOM] 时的自定义文本（默认空）
+ * @param customText3 段 3 为 [NameSegment.CUSTOM] 时的自定义文本（默认空）
+ * @param customText4 段 4 为 [NameSegment.CUSTOM] 时的自定义文本（默认空）
  */
 data class NamingConfig(
     val segment1: NameSegment = NameSegment.DATE,
     val segment2: NameSegment = NameSegment.BORROWER,
     val segment3: NameSegment = NameSegment.ADDRESS,
     val segment4: NameSegment = NameSegment.NONE,
+    val customText1: String = "",
+    val customText2: String = "",
+    val customText3: String = "",
+    val customText4: String = "",
 ) {
     /** 全部段均为 NONE（即未配置任何命名段）。 */
     val isAllNone: Boolean
@@ -25,4 +33,8 @@ data class NamingConfig(
     /** 按顺序返回 4 段配置。 */
     val segments: List<NameSegment>
         get() = listOf(segment1, segment2, segment3, segment4)
+
+    /** 按顺序返回 4 段自定义文本（与 [segments] 索引一一对应）。 */
+    val customTexts: List<String>
+        get() = listOf(customText1, customText2, customText3, customText4)
 }

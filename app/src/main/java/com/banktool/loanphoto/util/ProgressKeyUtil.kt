@@ -5,9 +5,8 @@ import java.security.MessageDigest
 /**
  * progressKey / excelUriMd5 生成工具。
  *
- * 与 Kivy v3.22.24 完全对齐：
- * - progressKey = md5(borrower + "|" + address)[:16]
- * - excelUriMd5 = md5(uri)[:16]
+ * progressKey = md5(borrower + "|" + address)[:16]
+ * excelUriMd5 = md5(uri)[:16]
  *
  * 均取 md5 hexdigest 前 16 个字符。
  */

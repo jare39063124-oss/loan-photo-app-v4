@@ -26,11 +26,8 @@ import com.banktool.loanphoto.ui.theme.TextSecondary
  * 第 1 次: 说明将删除"缩略图 + 拍照进度 + 备注"
  * 第 2 次: 确认删除按钮（红色）+ 取消
  *
- * 执行清除（由调用方实现）：
- * 1. 清除 thumbnails/<progress_key>/ 目录
- * 2. 清除 progress.json 中对应 progress_keys
- * 3. 更新 excel_data_index.json (移除该 excel_uri_md5 条目)
- * 4. 清除 _row_remarks 中对应行号
+ * 实际清除由调用方执行：缩略图目录、progress.json 中对应进度、
+ * excel_data_index.json 索引条目与 _row_remarks 行级备注。
  *
  * @param fileName 显示在标题中的 Excel 文件名
  * @param onConfirm 确认删除回调
