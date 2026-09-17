@@ -14,7 +14,12 @@ import com.banktool.loanphoto.data.camera.LocationResult
 import com.banktool.loanphoto.data.camera.LocationService
 import com.banktool.loanphoto.data.camera.PhotoQuality
 import com.banktool.loanphoto.data.camera.ThumbnailGenerator
+import com.banktool.loanphoto.data.camera.WatermarkConfig
+import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkGenerator
+import com.banktool.loanphoto.data.camera.WatermarkPosition
+import com.banktool.loanphoto.data.camera.WatermarkSegmentSetting
+import com.banktool.loanphoto.data.camera.WatermarkSource
 import com.banktool.loanphoto.data.location.LocationSnapshotGenerator
 import com.banktool.loanphoto.data.naming.NamingConfigRepository
 import com.banktool.loanphoto.data.naming.NamingRuleGenerator
@@ -25,15 +30,18 @@ import com.banktool.loanphoto.domain.entity.PhotoType
 import com.banktool.loanphoto.domain.repository.CameraSessionRepository
 import com.banktool.loanphoto.domain.repository.ExcelDataIndexRepository
 import com.banktool.loanphoto.domain.repository.ProgressRepository
+import com.banktool.loanphoto.ui.settings.photoTypeConfigsFlow
 import com.banktool.loanphoto.util.ProgressKeyUtil
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -48,7 +56,8 @@ import java.util.concurrent.Executor
 import javax.inject.Inject
 
 data class CameraUiState(
-    val currentPhotoType: String = PhotoType.DISTANT.displayName,
+    /** 当前拍照类型 displayName；初始为默认配置首项，collect 首帧后被用户配置首项覆盖。 */
+    val currentPhotoType: String = PhotoType.DEFAULT_CONFIGS.first().displayName,
     val primaryRow: CustomerRow? = null,
     val multiSelectRows: List<CustomerRow> = emptyList(),
     val excelUri: String = "",
@@ -105,14 +114,25 @@ class CameraViewModel @Inject constructor(
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
 
     /**
-     * 会话级水印文本覆盖（key: `"slot_N"`，N 为水印槽位索引 0..3，value 为替换该槽位的行文本）。
+     * 会话级水印文本覆盖（key: `"slot_N"`，N 为水印槽位索引 0..4，value 为替换该槽位的行文本）。
      *
      * - 仅在本 ViewModel 生命周期内生效（nav scope），退出相机页销毁即恢复默认
      * - 每次 [onImageSaved] 读取最新值传给 WatermarkGenerator，对本次及后续拍照立即生效
+     * - 定位槽（LOCATION_LATLNG）不可覆盖（由 WatermarkGenerator.resolveWatermarkLines 锁定）
      * - 仅存非空白键值；空 map 表示全默认
      */
     private val _watermarkOverrides = MutableStateFlow<Map<String, String>>(emptyMap())
     val watermarkOverrides: StateFlow<Map<String, String>> = _watermarkOverrides.asStateFlow()
+
+    /**
+     * 水印配置（与设置页共享同一 DataStore 流；取景页实时水印预览与水印设置弹窗的数据源）。
+     */
+    val watermarkConfig: StateFlow<WatermarkConfig> = watermarkConfigRepository.configFlow()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, WatermarkConfig(segments = emptyList()))
+
+    /** 最近已知定位（取景页实时水印预览的定位段来源；null 表示暂无可用定位）。 */
+    private val _lastKnownLocation = MutableStateFlow<LocationResult?>(null)
+    val lastKnownLocation: StateFlow<LocationResult?> = _lastKnownLocation.asStateFlow()
 
     /** 主线程 Executor（拍照回调）。 */
     val mainExecutor: Executor by lazy { ContextCompat.getMainExecutor(app) }
@@ -138,6 +158,21 @@ class CameraViewModel @Inject constructor(
         viewModelScope.launch {
             cameraEngine.cameraReady.collect { ready ->
                 _uiState.update { it.copy(cameraReady = ready) }
+            }
+        }
+        // 收集拍照类型配置（与设置页共享同一 DataStore 流）→ 同步 currentPhotoType：
+        // 首帧将占位值覆盖为配置首项；用户在设置页删除/重命名当前类型后自动重置为首项，
+        // 避免未点类型条直接拍照时文件名带上已删除的旧类型名
+        viewModelScope.launch {
+            photoTypeConfigsFlow(app).collect { configs ->
+                if (configs.isEmpty()) return@collect
+                _uiState.update { state ->
+                    if (configs.none { it.displayName == state.currentPhotoType }) {
+                        state.copy(currentPhotoType = configs.first().displayName)
+                    } else {
+                        state
+                    }
+                }
             }
         }
     }
@@ -240,8 +275,10 @@ class CameraViewModel @Inject constructor(
     /**
      * 位置预热：在进入相机界面或获得位置权限后立即触发一次定位。
      *
-     * - 成功：清零 [CameraUiState.locationFailed]，缓存将在 5 分钟内被复用
-     * - 失败：置位 [CameraUiState.locationFailed]，触发 Snackbar 提示用户检查权限/GPS
+     * - 成功：清零 [CameraUiState.locationFailed]，缓存将在 5 分钟内被复用，
+     *   并把结果写入 [lastKnownLocation] 供取景页实时水印预览使用
+     * - 失败：置位 [CameraUiState.locationFailed]，触发 Snackbar 提示用户检查权限/GPS，
+     *   并兜底读取最近一次已知定位填充 [lastKnownLocation]（无则保持 null）
      *
      * 不阻塞 UI，失败也不抛异常（仅记录日志）。
      */
@@ -257,10 +294,100 @@ class CameraViewModel @Inject constructor(
             }
             if (result == null) {
                 _uiState.update { it.copy(locationFailed = true) }
+                // 实时定位失败时兜底读取最近已知定位，供取景页水印预览定位段展示
+                _lastKnownLocation.value = withContext(Dispatchers.IO) {
+                    runCatching { locationService.getLastKnownLocation() }
+                        .onFailure { Timber.w(it, "兜底读取最近定位失败（预览）") }
+                        .getOrNull()
+                }
             } else {
                 _uiState.update { it.copy(locationFailed = false) }
+                _lastKnownLocation.value = result
             }
         }
+    }
+
+    /**
+     * 最近已知定位结果（水印预览对话框只读展示用）。
+     *
+     * 依次尝试 LocationService 缓存/历史/DataStore 持久化定位（不限年龄）；
+     * 均无或读取失败时返回 null（调用方显示「拍照时自动定位」占位）。
+     */
+    suspend fun lastKnownLocationResult(): LocationResult? = withContext(Dispatchers.IO) {
+        try {
+            locationService.getLastKnownLocation()
+        } catch (e: Exception) {
+            Timber.w(e, "读取最近定位失败（水印预览）")
+            null
+        }
+    }
+
+    /**
+     * 设置某个水印槽位的段配置并持久化（水印设置弹窗调用，写全局 DataStore，
+     * 设置页与取景页实时预览经 configFlow 自动同步）。
+     *
+     * @param index 槽位索引（0..4）
+     * @param source 段内容来源（选 [WatermarkSource.CUSTOM] 时 [customText] 为其文本）
+     * @param customText CUSTOM 段的自定义文本（其它来源忽略）
+     */
+    fun setWatermarkSegmentSetting(index: Int, source: WatermarkSource, customText: String) {
+        viewModelScope.launch {
+            watermarkConfigRepository.setSegmentSetting(index, WatermarkSegmentSetting(source, customText))
+        }
+    }
+
+    /** 启用 / 关闭水印（水印设置弹窗调用）。 */
+    fun setWatermarkEnabled(v: Boolean) {
+        viewModelScope.launch { watermarkConfigRepository.setEnabled(v) }
+    }
+
+    /** 设置水印字号（水印设置弹窗调用）。 */
+    fun setWatermarkFontSize(v: WatermarkFontSize) {
+        viewModelScope.launch { watermarkConfigRepository.setFontSize(v) }
+    }
+
+    /** 设置水印位置（水印设置弹窗调用）。 */
+    fun setWatermarkPosition(v: WatermarkPosition) {
+        viewModelScope.launch { watermarkConfigRepository.setPosition(v) }
+    }
+
+    /** 设置水印不透明度（水印设置弹窗调用）。 */
+    fun setWatermarkOpacity(v: Float) {
+        viewModelScope.launch { watermarkConfigRepository.setOpacity(v) }
+    }
+
+    /**
+     * 取景页实时水印预览行：与拍照时绘制完全同源。
+     *
+     * 行内容 = [WatermarkGenerator.buildSegments]（按当前配置/时间/定位/主行数据逐槽生成，
+     * 定位槽两行）→ [WatermarkGenerator.resolveWatermarkLines]（应用会话级覆盖并锁定定位槽）。
+     * [config] 的 segmentSettings 为 null（配置未加载完）时回退旧 4 开关路径（显示默认行）；
+     * 水印关闭或全部段被跳过时返回空列表（调用方据此不显示预览块）。
+     *
+     * @param config 当前水印配置
+     * @param row 当前主客户行（可为 null，数据段跳过）
+     * @param location 最近已知定位（可为 null，定位段显示「定位失败」）
+     * @param overrides 会话级文本覆盖（[watermarkOverrides] 当前值）
+     */
+    fun watermarkPreviewLines(
+        config: WatermarkConfig,
+        row: CustomerRow?,
+        location: LocationResult?,
+        overrides: Map<String, String>,
+    ): List<String> {
+        if (!config.enabled) return emptyList()
+        val slotLines = watermarkGenerator.buildSegments(
+            config = config,
+            captureTimeMillis = System.currentTimeMillis(),
+            location = location,
+            row = row,
+        )
+        if (slotLines.isEmpty()) return emptyList()
+        val effectiveConfig = config.copy(
+            segments = slotLines.map { it.second },
+            slotLines = slotLines,
+        )
+        return watermarkGenerator.resolveWatermarkLines(effectiveConfig, overrides)
     }
 
     /**
@@ -270,23 +397,6 @@ class CameraViewModel @Inject constructor(
      */
     fun updateWatermarkOverrides(overrides: Map<String, String>) {
         _watermarkOverrides.value = overrides.filterValues { it.isNotBlank() }
-    }
-
-    /**
-     * 最近已知经纬度文本（水印预览对话框只读展示用）。
-     *
-     * 依次尝试 LocationService 缓存/历史/DataStore 持久化定位（不限年龄）；
-     * 均无或读取失败时返回占位提示文案。
-     */
-    suspend fun lastKnownLatlngText(): String = withContext(Dispatchers.IO) {
-        try {
-            locationService.getLastKnownLocation()
-                ?.let { "%.6f,%.6f".format(Locale.US, it.lat, it.lng) }
-                ?: "拍照时自动定位"
-        } catch (e: Exception) {
-            Timber.w(e, "读取最近定位失败（水印预览）")
-            "拍照时自动定位"
-        }
     }
 
     /**

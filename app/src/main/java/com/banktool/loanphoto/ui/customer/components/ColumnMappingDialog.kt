@@ -110,6 +110,12 @@ fun ColumnMappingDialog(
                     fontSize = 12.sp,
                     color = if (valid) TextSecondary else Error,
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "更改列映射会改变进度关联，确认后将自动迁移已拍进度",
+                    fontSize = 12.sp,
+                    color = TextSecondary,
+                )
             }
         },
         confirmButton = {

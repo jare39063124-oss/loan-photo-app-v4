@@ -171,6 +171,31 @@ class ProgressRepositoryImpl @Inject constructor(
             }
         }
 
+    // ---- 列映射变更时的进度迁移 ----
+
+    override suspend fun copyProgress(oldKey: String, newKey: String) =
+        withContext(Dispatchers.IO) {
+            if (oldKey == newKey) return@withContext
+            mutex.withLock {
+                val fileMap = dataSource.load()
+                val oldNode = fileMap[oldKey] ?: return@withLock
+                val oldDto = entryAdapter.fromJsonValue(oldNode) as? ProgressEntryDto
+                    ?: return@withLock
+                if (oldDto.photos.isEmpty()) return@withLock
+                // 新键已有进度（photos 非空）时不覆盖
+                val newDto = fileMap[newKey]?.let { entryAdapter.fromJsonValue(it) as? ProgressEntryDto }
+                if (newDto != null && newDto.photos.isNotEmpty()) return@withLock
+                // 深拷贝：集合取独立副本，避免与旧条目共享引用后互相影响
+                val copied = oldDto.copy(
+                    photos = oldDto.photos.toList(),
+                    types = oldDto.types.toMap(),
+                    photoTypes = oldDto.photoTypes.toList(),
+                )
+                fileMap[newKey] = entryAdapter.toJsonValue(copied)
+                dataSource.save(fileMap)
+            }
+        }
+
     // ---- 维护 ----
 
     override suspend fun removeProgressKeys(keys: List<String>) =

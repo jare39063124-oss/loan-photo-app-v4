@@ -4,7 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.banktool.loanphoto.data.camera.LocationResult
 import com.banktool.loanphoto.data.camera.WatermarkConfig
 import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkPosition
@@ -46,11 +49,13 @@ private val PreviewBlockColor = Color(0x8C000000)
 /**
  * 编辑区单个激活槽位的数据。
  *
- * @param index 槽位索引（0..3，对应 overrides 的 `slot_N` key）
+ * @param index 槽位索引（0..4，对应 overrides 的 `slot_N` key）
  * @param source 段内容来源
  * @param label 编辑框标签（含槽位号与来源名）
  * @param default 默认生成文本（CUSTOM 段为配置的 customText）
- * @param editable 是否可编辑（经纬度段只读，拍照时自动定位）
+ * @param editable 是否可编辑（定位段只读，拍照时自动定位）
+ * @param readonlyLines 只读展示行（[WatermarkSource.LOCATION_LATLNG] 槽固定两行：
+ *        定位地址 + 经纬度）；非空时该槽渲染为只读文本而非输入框
  */
 private data class SlotUi(
     val index: Int,
@@ -58,6 +63,7 @@ private data class SlotUi(
     val label: String,
     val default: String,
     val editable: Boolean,
+    val readonlyLines: List<String> = emptyList(),
 )
 
 /**
@@ -67,15 +73,17 @@ private data class SlotUi(
  *   （半透明黑底 + 白色粗体文本，与 WatermarkGenerator 实际绘制样式一致）
  * - 编辑区：每个激活槽位（非 OFF）一个 OutlinedTextField，预填当前生效值
  *   （已有 `slot_N` 会话覆盖优先，否则为默认生成值：日期=今天、序号/客户名/性质/备注=当前
- *   primary [CustomerRow] 字段、地址=addrGeneral+addrDetail、经纬度=只读展示拍照时自动定位）
- * - 确定：收集非空白且与默认值不同的槽位为 overrides（key: `"slot_N"`），
+ *   primary [CustomerRow] 字段、房证地址=addrGeneral+addrDetail；
+ *   定位段（LOCATION_LATLNG）只读展示两行「定位地址 + 经纬度」，不可编辑，
+ *   且绘制时该槽不可被覆盖）
+ * - 确定：收集可编辑槽位中非空白且与默认值不同的槽位为 overrides（key: `"slot_N"`），
  *   由 [onConfirm] 写回 ViewModel；取消/返回不改动
  *
  * @param config 当前持久化水印配置（段配置经 [WatermarkConfig.segmentSettings] 传入，
- *        缺失时按默认 4 段渲染）
+ *        缺失时按默认 5 段渲染）
  * @param primaryRow 当前主客户行（预填默认值）
  * @param currentOverrides 当前已生效的会话级覆盖（再次打开时回显）
- * @param latLngText 经纬度文本（最近已知定位或占位提示，只读展示）
+ * @param location 最近已知定位（定位段只读展示来源；null 时显示「拍照时自动定位」占位）
  * @param onConfirm 确定回调，参数为非空白键值的 overrides map
  * @param onDismiss 取消/关闭回调
  */
@@ -84,7 +92,7 @@ fun WatermarkPreviewDialog(
     config: WatermarkConfig,
     primaryRow: CustomerRow?,
     currentOverrides: Map<String, String>,
-    latLngText: String,
+    location: LocationResult?,
     onConfirm: (Map<String, String>) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -93,9 +101,16 @@ fun WatermarkPreviewDialog(
     val dateDefault = remember {
         LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy年MM月dd日", Locale.getDefault()))
     }
+    // 定位段只读两行：定位地址（行1）+ 经纬度（行2），与 buildSegments 的 LOCATION_LATLNG 行一致
+    val locationLines = remember(location) {
+        listOf(
+            location?.address?.ifBlank { "未知位置" } ?: "拍照时自动定位",
+            location?.let { "%.6f,%.6f".format(Locale.US, it.lat, it.lng) } ?: "拍照时自动定位",
+        )
+    }
 
     // 激活槽位（OFF 不渲染、不参与覆盖收集），默认值按段来源计算
-    val slots = remember(settings, dateDefault, latLngText) {
+    val slots = remember(settings, dateDefault, locationLines) {
         settings.mapIndexed { index, setting ->
             SlotUi(
                 index = index,
@@ -105,15 +120,20 @@ fun WatermarkPreviewDialog(
                     WatermarkSource.DATE -> dateDefault
                     WatermarkSource.SERIAL -> primaryRow?.serial.orEmpty()
                     WatermarkSource.BORROWER -> primaryRow?.borrower.orEmpty()
-                    WatermarkSource.ADDRESS ->
+                    WatermarkSource.EXCEL_ADDR ->
                         primaryRow?.addrGeneral.orEmpty() + primaryRow?.addrDetail.orEmpty()
                     WatermarkSource.PROPERTY_TYPE -> primaryRow?.propertyType.orEmpty()
                     WatermarkSource.REMARK -> primaryRow?.remark.orEmpty()
-                    WatermarkSource.LATLNG -> latLngText
+                    WatermarkSource.LOCATION_LATLNG -> ""
                     WatermarkSource.CUSTOM -> setting.customText
                     WatermarkSource.OFF -> ""
                 },
-                editable = setting.source != WatermarkSource.LATLNG,
+                editable = setting.source != WatermarkSource.LOCATION_LATLNG,
+                readonlyLines = if (setting.source == WatermarkSource.LOCATION_LATLNG) {
+                    locationLines
+                } else {
+                    emptyList()
+                },
             )
         }.filter { it.source != WatermarkSource.OFF }
     }
@@ -161,16 +181,34 @@ fun WatermarkPreviewDialog(
                     }
                 }
 
-                // 编辑区为每个激活槽位一个输入框，经纬度只读
+                // 编辑区：可编辑槽位一个输入框；定位段槽只读展示两行（定位地址 + 经纬度）
                 slots.forEachIndexed { i, slot ->
-                    OutlinedTextField(
-                        value = slotStates[i].value,
-                        onValueChange = { slotStates[i].value = it },
-                        label = { Text(slot.label) },
-                        readOnly = !slot.editable,
-                        singleLine = !slot.editable,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    if (slot.readonlyLines.isNotEmpty()) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = slot.label,
+                                fontSize = 12.sp,
+                                color = Color(0xFF9E9E9E),
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            slot.readonlyLines.forEach { line ->
+                                Text(
+                                    text = line,
+                                    fontSize = 14.sp,
+                                    color = Color(0xFF616161),
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    } else {
+                        OutlinedTextField(
+                            value = slotStates[i].value,
+                            onValueChange = { slotStates[i].value = it },
+                            label = { Text(slot.label) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
                 if (slots.isEmpty()) {
                     Text(
@@ -182,20 +220,22 @@ fun WatermarkPreviewDialog(
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = {
-                    val overrides = buildMap {
-                        slots.forEachIndexed { i, slot ->
-                            val text = slotStates[i].value.trim()
-                            if (text.isNotEmpty() && text != slot.default.trim()) {
-                                put("slot_${slot.index}", text)
+                TextButton(
+                    onClick = {
+                        val overrides = buildMap {
+                            slots.forEachIndexed { i, slot ->
+                                // 定位段槽只读展示，不参与会话覆盖（绘制时该槽也被锁定）
+                                if (!slot.editable) return@forEachIndexed
+                                val text = slotStates[i].value.trim()
+                                if (text.isNotEmpty() && text != slot.default.trim()) {
+                                    put("slot_${slot.index}", text)
+                                }
                             }
                         }
-                    }
-                    onConfirm(overrides)
-                },
-            ) { Text("确定") }
-        },
+                        onConfirm(overrides)
+                    },
+                ) { Text("确定") }
+            },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }
         },
@@ -207,24 +247,25 @@ fun WatermarkPreviewDialog(
  * 编辑中的字段实时反映到预览）。
  *
  * 空数据段（序号/客户名/性质/备注/自定义文本空白）不显示，与实际绘制一致；
- * 日期/地址段空白时显示占位便于编辑预览；经纬度段始终展示只读文本。
+ * 日期/房证地址段空白时显示占位便于编辑预览；定位段展示两行只读文本
+ * （定位地址 + 经纬度），与实际绘制一致。
  */
 private fun buildPreviewLines(
     slots: List<SlotUi>,
     slotStates: List<MutableState<String>>,
 ): List<String> = slots.mapIndexed { i, slot -> slot to slotStates[i].value.trim() }
-    .mapNotNull { (slot, text) ->
+    .flatMap { (slot, text) ->
         when (slot.source) {
             WatermarkSource.SERIAL,
             WatermarkSource.BORROWER,
             WatermarkSource.PROPERTY_TYPE,
             WatermarkSource.REMARK,
             WatermarkSource.CUSTOM,
-            -> text.takeIf { it.isNotEmpty() }
-            WatermarkSource.DATE -> text.ifBlank { "日期" }
-            WatermarkSource.ADDRESS -> text.ifBlank { "地址" }
-            WatermarkSource.LATLNG -> text
-            WatermarkSource.OFF -> null
+            -> listOfNotNull(text.takeIf { it.isNotEmpty() })
+            WatermarkSource.DATE -> listOf(text.ifBlank { "日期" })
+            WatermarkSource.EXCEL_ADDR -> listOf(text.ifBlank { "房证地址" })
+            WatermarkSource.LOCATION_LATLNG -> slot.readonlyLines
+            WatermarkSource.OFF -> emptyList()
         }
     }
 

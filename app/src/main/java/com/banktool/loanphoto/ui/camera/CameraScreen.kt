@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,6 +61,9 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.banktool.loanphoto.data.camera.LocationResult
+import com.banktool.loanphoto.data.camera.WatermarkFontSize
+import com.banktool.loanphoto.data.camera.WatermarkPosition
 import com.banktool.loanphoto.domain.entity.CustomerRow
 import com.banktool.loanphoto.domain.entity.PhotoTypeConfig
 import com.banktool.loanphoto.ui.settings.SettingsViewModel
@@ -89,12 +93,27 @@ fun CameraScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val guideLineConfig by settingsViewModel.guideLineConfig.collectAsStateWithLifecycle()
     val photoTypeConfigs by settingsViewModel.photoTypeConfigs.collectAsStateWithLifecycle()
-    // 水印预览/编辑：当前持久化水印配置、会话级文本覆盖、只读经纬度文本
+    // 水印：持久化配置（与设置页共享同一 DataStore 流）、会话级文本覆盖、最近已知定位
     var showWatermarkDialog by remember { mutableStateOf(false) }
-    val watermarkConfig by settingsViewModel.watermarkConfig.collectAsStateWithLifecycle()
+    var showWatermarkSettingsDialog by remember { mutableStateOf(false) }
+    val watermarkConfig by viewModel.watermarkConfig.collectAsStateWithLifecycle()
     val watermarkOverrides by viewModel.watermarkOverrides.collectAsStateWithLifecycle()
-    val lastKnownLatlng by produceState(initialValue = "拍照时自动定位") {
-        value = viewModel.lastKnownLatlngText()
+    // 预热定位结果（prewarmLocation 成功/兜底后更新）优先，组合时另拉一次历史定位兜底
+    val prewarmedLocation by viewModel.lastKnownLocation.collectAsStateWithLifecycle()
+    val historicalLocation by produceState<LocationResult?>(initialValue = null) {
+        value = viewModel.lastKnownLocationResult()
+    }
+    val lastKnownLocation = prewarmedLocation ?: historicalLocation
+    // 取景页实时水印预览行（与拍照绘制同源；config/行/定位/覆盖变化即刷新）
+    val watermarkPreviewLines = remember(
+        watermarkConfig, uiState.primaryRow, lastKnownLocation, watermarkOverrides,
+    ) {
+        viewModel.watermarkPreviewLines(
+            config = watermarkConfig,
+            row = uiState.primaryRow,
+            location = lastKnownLocation,
+            overrides = watermarkOverrides,
+        )
     }
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -212,6 +231,19 @@ fun CameraScreen(
                 }
             }
 
+            // 取景页实时水印预览块（按持久化配置四角定位、等比字号与不透明度；点击打开水印设置弹窗）。
+            // 纯 Compose 叠加，不触碰相机引擎/Surface/生命周期；水印关闭或无有效行时不显示
+            if (watermarkPreviewLines.isNotEmpty()) {
+                LiveWatermarkPreview(
+                    lines = watermarkPreviewLines,
+                    fontSize = watermarkConfig.fontSize,
+                    opacity = watermarkConfig.opacity,
+                    position = watermarkConfig.position,
+                    onClick = { showWatermarkSettingsDialog = true },
+                    modifier = Modifier.align(previewAlignment(watermarkConfig.position)),
+                )
+            }
+
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -277,18 +309,31 @@ fun CameraScreen(
                 )
             }
 
-            // 水印预览/编辑对话框（会话级覆盖，确定后对本次及后续拍照立即生效）
+            // 水印预览/编辑对话框（拍照前逐槽会话级覆盖，确定后对本次及后续拍照立即生效）
             if (showWatermarkDialog) {
                 WatermarkPreviewDialog(
                     config = watermarkConfig,
                     primaryRow = uiState.primaryRow,
                     currentOverrides = watermarkOverrides,
-                    latLngText = lastKnownLatlng,
+                    location = lastKnownLocation,
                     onConfirm = { overrides ->
                         viewModel.updateWatermarkOverrides(overrides)
                         showWatermarkDialog = false
                     },
                     onDismiss = { showWatermarkDialog = false },
+                )
+            }
+
+            // 水印设置弹窗（与设置页水印卡共用内容，写持久化全局配置）
+            if (showWatermarkSettingsDialog) {
+                WatermarkSettingsDialog(
+                    config = watermarkConfig,
+                    onEnabledChange = viewModel::setWatermarkEnabled,
+                    onFontSizeChange = viewModel::setWatermarkFontSize,
+                    onPositionChange = viewModel::setWatermarkPosition,
+                    onOpacityChange = viewModel::setWatermarkOpacity,
+                    onSegmentChange = viewModel::setWatermarkSegmentSetting,
+                    onDismiss = { showWatermarkSettingsDialog = false },
                 )
             }
         }
@@ -770,6 +815,74 @@ private fun CameraGuideLines(
                 start = Offset(cx, cy - halfLen),
                 end = Offset(cx, cy + halfLen),
                 strokeWidth = markStrokeWidth,
+            )
+        }
+    }
+}
+
+/**
+ * 取景页水印预览块对齐方式（与实际水印四角位置对应）。
+ */
+private fun previewAlignment(position: WatermarkPosition): Alignment = when (position) {
+    WatermarkPosition.BOTTOM_RIGHT -> Alignment.BottomEnd
+    WatermarkPosition.BOTTOM_LEFT -> Alignment.BottomStart
+    WatermarkPosition.TOP_RIGHT -> Alignment.TopEnd
+    WatermarkPosition.TOP_LEFT -> Alignment.TopStart
+}
+
+/**
+ * 取景页实时水印预览块：半透明黑底 + 白色加粗多行文本，样式对齐
+ * [com.banktool.loanphoto.data.camera.WatermarkGenerator] 实际绘制
+ * （背景 alpha = 0.55 × 不透明度、文字 alpha = 不透明度、字号按档位等比缩小）。
+ *
+ * 纯 Compose 叠加层，仅消费点击事件打开水印设置弹窗，不触碰相机引擎/Surface/生命周期。
+ * 顶部位置避让类型条与客户信息卡，底部位置避让缩放/闪光灯控制条与 Snackbar。
+ *
+ * @param lines 水印行（由 [CameraViewModel.watermarkPreviewLines] 实时计算）
+ * @param fontSize 字号档位
+ * @param opacity 不透明度 [0,1]
+ * @param position 四角位置
+ * @param onClick 点击预览块回调
+ * @param modifier 对齐修饰符（调用方传入 BoxScope.align 结果）
+ */
+@Composable
+private fun LiveWatermarkPreview(
+    lines: List<String>,
+    fontSize: WatermarkFontSize,
+    opacity: Float,
+    position: WatermarkPosition,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // 避让既有叠加层的边缘留白：顶部避开类型条（8dp 起）与客户信息卡/按钮（96dp 起 40dp 高），
+    // 底部与 SnackbarHost 同层（225dp），避开缩放条/闪光灯条/底部控制条
+    val edgePadding = if (position == WatermarkPosition.TOP_LEFT || position == WatermarkPosition.TOP_RIGHT) {
+        Modifier
+            .statusBarsPadding()
+            .padding(top = 136.dp, start = 12.dp, end = 12.dp)
+    } else {
+        Modifier.padding(bottom = 225.dp, start = 16.dp, end = 16.dp)
+    }
+    val clampedOpacity = opacity.coerceIn(0f, 1f)
+    val previewTextSize = when (fontSize) {
+        WatermarkFontSize.LARGE -> 13.sp
+        WatermarkFontSize.MEDIUM -> 10.sp
+        WatermarkFontSize.SMALL -> 8.sp
+    }
+    Column(
+        modifier = modifier
+            .then(edgePadding)
+            .clickable(onClick = onClick)
+            .background(Color.Black.copy(alpha = 0.55f * clampedOpacity), RoundedCornerShape(4.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+    ) {
+        lines.forEach { line ->
+            Text(
+                text = line,
+                color = White.copy(alpha = clampedOpacity),
+                fontSize = previewTextSize,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
             )
         }
     }

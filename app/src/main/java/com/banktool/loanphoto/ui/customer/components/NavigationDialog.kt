@@ -1,5 +1,6 @@
 package com.banktool.loanphoto.ui.customer.components
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -26,9 +27,12 @@ import java.net.URLEncoder
 /**
  * 地址导航应用选择弹窗。
  *
- * 由条目地址点击触发，提供高德/百度两个入口：
- * - 已安装对应地图 App：直接拉起 Deep Link 导航（[Intent.FLAG_ACTIVITY_NEW_TASK]）
- * - 未安装：Toast「未安装XX地图」并尝试跳应用市场 `market://details?id=<包名>`（失败仅 Toast）
+ * 由条目地址点击触发，提供高德/百度两个入口。
+ * 拉起策略为三段式（不前置判断安装状态，规避 Android 11+ 包可见性限制下的误判）：
+ * 1. 直接拉起 Deep Link 导航（[Intent.FLAG_ACTIVITY_NEW_TASK]）
+ * 2. 抛 [ActivityNotFoundException]（未安装/无 App 处理该 URI）→ Toast「未安装XX地图」
+ *    并尝试跳应用市场 `market://details?id=<包名>`（失败仅保留 Toast）
+ * 3. 其他异常：仅 Toast「无法打开XX地图」
  *
  * @param address 完整导航地址（addrGeneral + addrDetail）
  * @param onDismiss 关闭弹窗
@@ -95,7 +99,10 @@ fun NavigationDialog(
     )
 }
 
-/** 拉起地图导航：已安装则直接打开 Deep Link，未安装则 Toast 并尝试跳应用市场。 */
+/**
+ * 拉起地图导航：直接尝试 Deep Link，仅在 [ActivityNotFoundException]（未安装）时
+ * Toast 并尝试跳应用市场；其他异常仅 Toast 失败。
+ */
 private fun launchNavigation(context: Context, app: String, address: String) {
     val encoded = URLEncoder.encode(address, "UTF-8").replace("+", "%20")
     val (uri, packageName, label) = when (app) {
@@ -111,33 +118,23 @@ private fun launchNavigation(context: Context, app: String, address: String) {
         )
     }
 
-    if (isAppInstalled(context, packageName)) {
-        val launched = runCatching {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri))
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(intent)
-        }.isSuccess
-        if (!launched) {
-            Toast.makeText(context, "无法打开${label}地图", Toast.LENGTH_SHORT).show()
-        }
-    } else {
+    try {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+    } catch (e: ActivityNotFoundException) {
         Toast.makeText(context, "未安装${label}地图", Toast.LENGTH_SHORT).show()
         // 尝试跳应用市场下载页（失败仅保留上方 Toast，不额外提示）
-        runCatching {
+        try {
             val market = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$packageName"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(market)
+        } catch (ignored: Exception) {
         }
+    } catch (e: Exception) {
+        Toast.makeText(context, "无法打开${label}地图", Toast.LENGTH_SHORT).show()
     }
 }
-
-private fun isAppInstalled(context: Context, packageName: String): Boolean =
-    try {
-        context.packageManager.getPackageInfo(packageName, 0)
-        true
-    } catch (e: Exception) {
-        false
-    }
 
 private const val APP_AMAP = "amap"
 private const val APP_BAIDU = "baidu"

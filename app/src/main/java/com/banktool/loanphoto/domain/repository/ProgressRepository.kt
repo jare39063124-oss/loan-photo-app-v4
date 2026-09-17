@@ -61,4 +61,14 @@ interface ProgressRepository {
 
     /** 将 photos 列表中的失效路径修复为 APP_DIR 下同名文件。 */
     suspend fun migratePhotoPaths()
+
+    /**
+     * 列映射变更时的进度迁移：将 oldKey 的拍照进度条目复制到 newKey。
+     *
+     * - 仅当 oldKey 条目存在（photos 非空）且 newKey 条目不存在（或无 photos）时执行深拷贝
+     *   （photos/types/photo_types/timestamp/remark 全部字段）
+     * - oldKey 条目保留不删；newKey 已有进度时不覆盖
+     * - oldKey 不存在或与 newKey 相同时为无操作
+     */
+    suspend fun copyProgress(oldKey: String, newKey: String)
 }

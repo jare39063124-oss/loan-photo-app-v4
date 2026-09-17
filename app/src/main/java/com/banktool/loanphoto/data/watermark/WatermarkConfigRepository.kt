@@ -14,6 +14,7 @@ import com.banktool.loanphoto.data.camera.WatermarkFontSize
 import com.banktool.loanphoto.data.camera.WatermarkPosition
 import com.banktool.loanphoto.data.camera.WatermarkSegmentSetting
 import com.banktool.loanphoto.data.camera.WatermarkSource
+import com.banktool.loanphoto.data.camera.WATERMARK_MAX_SLOTS
 import com.banktool.loanphoto.data.camera.defaultWatermarkSegmentSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -34,14 +35,17 @@ import javax.inject.Singleton
  * - fontSize（字号，默认 [WatermarkFontSize.MEDIUM]）
  * - position（位置，默认 [WatermarkPosition.BOTTOM_RIGHT]）
  * - opacity（不透明度，默认 0.7f）
- * - segment_settings（4 槽段配置 JSON 数组，见 [serializeSegmentSettings]）
+ * - segment_settings（5 槽段配置 JSON 数组，见 [serializeSegmentSettings]）
  * - showDate / showSerial / showAddress / showLatlng（旧水印内容逐项显示开关，仅作迁移来源，保留兼容）
  *
  * `segments` / `slotLines` 字段不在持久化范围（由 [com.banktool.loanphoto.data.camera.WatermarkGenerator]
  * 在拍照时实时构建），读取配置时返回空列表 / null，由调用方覆盖。
  *
- * 段配置迁移：`segment_settings` 缺失或解析失败时，由旧 `show_*` 布尔迁移
- * （槽1=DATE/OFF、槽2=SERIAL/OFF、槽3=ADDRESS/OFF、槽4=LATLNG/OFF），不回写旧键。
+ * 段配置迁移（至 5 槽）：
+ * - `segment_settings` 存在：解析时旧枚举名映射（ADDRESS→LOCATION_LATLNG、LATLNG→OFF，合并语义），
+ *   随后归一化到 5 槽（不足补 OFF、超出截断）
+ * - 缺失或解析失败：由旧 `show_*` 布尔迁移（槽1=DATE/OFF、槽2=SERIAL/OFF、槽3=定位段/OFF、
+ *   槽4/L槽5=OFF），不回写旧键
  *
  * 与命名规则 DataStore（`naming.preferences_pb`）相互独立，文件名 `watermark.preferences_pb`。
  * 所有 IO 操作在 [Dispatchers.IO] 上执行。
@@ -62,7 +66,7 @@ class WatermarkConfigRepository @Inject constructor(
      * 枚举转换失败时用 [runCatching] 安全回退，避免抛异常中断流。
      *
      * 段配置（[WatermarkConfig.segmentSettings]）永不为 null：
-     * `segment_settings` 存在且解析成功 → 解析值（归一化到 4 槽，不足补 OFF、超出截断）；
+     * `segment_settings` 存在且解析成功 → 解析值（旧枚举名映射后归一化到 5 槽，不足补 OFF、超出截断）；
      * 缺失或解析失败 → 由旧 `show_*` 布尔迁移（不回写旧键）。
      */
     fun configFlow(): Flow<WatermarkConfig> = context.watermarkDataStore.data.map { prefs ->
@@ -79,7 +83,7 @@ class WatermarkConfigRepository @Inject constructor(
             opacity = prefs[KEY_OPACITY] ?: 0.7f,
             showDate = prefs[KEY_SHOW_DATE] ?: true,
             showSerial = prefs[KEY_SHOW_SERIAL] ?: true,
-            showAddress = prefs[KEY_SHOW_ADDRESS] ?: true,
+            showAddress = prefs[KEY_SHOW_ADDR] ?: true,
             showLatlng = prefs[KEY_SHOW_LATNG] ?: true,
             segmentSettings = persisted?.let { normalizeSegmentSettings(it) }
                 ?: migrateLegacySegmentSettings(prefs),
@@ -98,11 +102,13 @@ class WatermarkConfigRepository @Inject constructor(
      * 读取当前持久化值（缺失/损坏时按旧键迁移），替换 [index] 槽位后整体回写，
      * 保证其余槽位不被破坏。
      *
-     * @param index 槽位索引（0..3）
+     * @param index 槽位索引（0..4）
      * @param setting 新的段配置
      */
     suspend fun setSegmentSetting(index: Int, setting: WatermarkSegmentSetting) {
-        require(index in 0..3) { "segment index must be 0..3, got $index" }
+        require(index in 0 until WATERMARK_MAX_SLOTS) {
+            "segment index must be 0..${WATERMARK_MAX_SLOTS - 1}, got $index"
+        }
         withContext(Dispatchers.IO) {
             context.watermarkDataStore.edit { prefs ->
                 val current = prefs[KEY_SEGMENT_SETTINGS]?.let { parseSegmentSettings(it) }
@@ -165,7 +171,7 @@ class WatermarkConfigRepository @Inject constructor(
      */
     suspend fun setShowAddress(v: Boolean) {
         withContext(Dispatchers.IO) {
-            context.watermarkDataStore.edit { prefs -> prefs[KEY_SHOW_ADDRESS] = v }
+            context.watermarkDataStore.edit { prefs -> prefs[KEY_SHOW_ADDR] = v }
         }
     }
 
@@ -203,19 +209,30 @@ class WatermarkConfigRepository @Inject constructor(
         val KEY_OPACITY = floatPreferencesKey("opacity")
         val KEY_SHOW_DATE = booleanPreferencesKey("show_date")
         val KEY_SHOW_SERIAL = booleanPreferencesKey("show_serial")
-        val KEY_SHOW_ADDRESS = booleanPreferencesKey("show_address")
+        val KEY_SHOW_ADDR = booleanPreferencesKey("show_address")
         val KEY_SHOW_LATNG = booleanPreferencesKey("show_latlng")
         val KEY_PHOTO_QUALITY = stringPreferencesKey("photo_quality")
         val KEY_SEGMENT_SETTINGS = stringPreferencesKey("segment_settings")
 
-        /** 固定槽位数。 */
-        const val SEGMENT_SLOT_COUNT = 4
+        /** 固定槽位数（5 槽）。 */
+        const val SEGMENT_SLOT_COUNT = WATERMARK_MAX_SLOTS
+
+        /**
+         * 旧枚举名 → 新枚举名映射（v4.3.0 旧 4 槽持久化数据迁移，合并语义）：
+         * - ADDRESS（旧"地址"段，实为定位地址）→ LOCATION_LATLNG（定位地址+经纬度）
+         * - LATLNG（旧"经纬度"段，内容已并入定位段）→ OFF
+         */
+        val LEGACY_SOURCE_NAMES = mapOf(
+            "ADDRESS" to "LOCATION_LATLNG",
+            "LATLNG" to "OFF",
+        )
 
         /**
          * 解析 `segment_settings` JSON 数组为段配置列表。
          *
-         * null/空串/解析失败返回 null（调用方走迁移路径）；单项 source 枚举名无法识别时
-         * 回退 [WatermarkSource.OFF]，customText 缺失回退空串。
+         * null/空串/解析失败返回 null（调用方走迁移路径）；单项 source 枚举名先经
+         * [LEGACY_SOURCE_NAMES] 旧名映射，仍无法识别时回退 [WatermarkSource.OFF]，
+         * customText 缺失回退空串。
          */
         fun parseSegmentSettings(json: String?): List<WatermarkSegmentSetting>? {
             if (json.isNullOrBlank()) return null
@@ -223,7 +240,9 @@ class WatermarkConfigRepository @Inject constructor(
                 val arr = JSONArray(json)
                 (0 until arr.length()).map { i ->
                     val obj = arr.getJSONObject(i)
-                    val source = runCatching { WatermarkSource.valueOf(obj.getString("source")) }
+                    val rawName = obj.getString("source")
+                    val mappedName = LEGACY_SOURCE_NAMES[rawName] ?: rawName
+                    val source = runCatching { WatermarkSource.valueOf(mappedName) }
                         .getOrDefault(WatermarkSource.OFF)
                     WatermarkSegmentSetting(source, obj.optString("customText", ""))
                 }
@@ -252,16 +271,18 @@ class WatermarkConfigRepository @Inject constructor(
             }
 
         /**
-         * 由旧 `show_*` 布尔迁移段配置：
-         * 槽1=DATE/OFF(showDate)、槽2=SERIAL/OFF(showSerial)、槽3=ADDRESS/OFF(showAddress)、
-         * 槽4=LATLNG/OFF(showLatlng)。不回写旧键（首次在设置页修改段配置时才落盘新键）。
+         * 由旧 `show_*` 布尔迁移段配置（旧 4 槽 → 新 5 槽，合并语义）：
+         * 槽1=DATE/OFF(showDate)、槽2=SERIAL/OFF(showSerial)、槽3=LOCATION_LATLNG/OFF(showAddress，
+         * 旧"地址"段升级为定位段)、槽4=OFF(旧 LATLNG 内容并入槽3)、槽5=OFF（新增槽默认关闭）。
+         * 不回写旧键（首次在设置页修改段配置时才落盘新键）。
          */
         fun migrateLegacySegmentSettings(prefs: Preferences): List<WatermarkSegmentSetting> =
             listOf(
                 if (prefs[KEY_SHOW_DATE] ?: true) WatermarkSource.DATE else WatermarkSource.OFF,
                 if (prefs[KEY_SHOW_SERIAL] ?: true) WatermarkSource.SERIAL else WatermarkSource.OFF,
-                if (prefs[KEY_SHOW_ADDRESS] ?: true) WatermarkSource.ADDRESS else WatermarkSource.OFF,
-                if (prefs[KEY_SHOW_LATNG] ?: true) WatermarkSource.LATLNG else WatermarkSource.OFF,
+                if (prefs[KEY_SHOW_ADDR] ?: true) WatermarkSource.LOCATION_LATLNG else WatermarkSource.OFF,
+                WatermarkSource.OFF,
+                WatermarkSource.OFF,
             ).map { WatermarkSegmentSetting(it) }
     }
 }

@@ -28,6 +28,7 @@ import com.banktool.loanphoto.domain.entity.PhotoTypeConfig
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -61,9 +62,58 @@ private val Context.guideLineDataStore: DataStore<Preferences> by preferencesDat
 )
 
 /** 拍照类型配置 DataStore（独立持久化，清空缓存时不会被清除，保留用户自定义类型）。 */
-private val Context.photoTypeDataStore: DataStore<Preferences> by preferencesDataStore(
+internal val Context.photoTypeDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "photo_type_configs",
 )
+
+private val KEY_PHOTO_TYPE_CONFIGS = stringPreferencesKey("photo_type_configs")
+
+/**
+ * 拍照类型配置流（设置页与相机页共享同一 DataStore 来源）。
+ *
+ * 相机页 [com.banktool.loanphoto.ui.camera.CameraViewModel] 据此收集最新类型列表，
+ * 同步 `currentPhotoType`（初始为配置首项；用户删除当前类型后自动重置）。
+ */
+internal fun photoTypeConfigsFlow(context: Context): Flow<List<PhotoTypeConfig>> =
+    context.photoTypeDataStore.data.map { prefs ->
+        deserializePhotoTypeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS])
+    }
+
+/** 将拍照类型配置列表序列化为 JSON 字符串（`[{"id":..,"displayName":..},...]`）。 */
+internal fun serializePhotoTypeConfigs(configs: List<PhotoTypeConfig>): String {
+    val arr = JSONArray()
+    for (c in configs) {
+        val obj = JSONObject()
+        obj.put("id", c.id)
+        obj.put("displayName", c.displayName)
+        arr.put(obj)
+    }
+    return arr.toString()
+}
+
+/**
+ * 反序列化 JSON 字符串为拍照类型配置列表。
+ *
+ * - null/空串/解析失败 → 返回 [PhotoType.DEFAULT_CONFIGS]（向后兼容首次安装与损坏数据）
+ * - 解析结果为空数组 → 返回 [PhotoType.DEFAULT_CONFIGS]（兜底，避免无类型可用）
+ */
+internal fun deserializePhotoTypeConfigs(json: String?): List<PhotoTypeConfig> {
+    if (json.isNullOrBlank()) return PhotoType.DEFAULT_CONFIGS
+    return runCatching {
+        val arr = JSONArray(json)
+        val result = ArrayList<PhotoTypeConfig>(arr.length())
+        for (i in 0 until arr.length()) {
+            val obj = arr.getJSONObject(i)
+            result.add(
+                PhotoTypeConfig(
+                    id = obj.getString("id"),
+                    displayName = obj.getString("displayName"),
+                ),
+            )
+        }
+        result.ifEmpty { PhotoType.DEFAULT_CONFIGS }
+    }.getOrDefault(PhotoType.DEFAULT_CONFIGS)
+}
 
 /**
  * 设置页 ViewModel。
@@ -116,8 +166,7 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, GuideLineConfig())
 
     /** 拍照类型配置（初始值 5 种内置类型，订阅 DataStore 后立即更新为持久化值）。 */
-    val photoTypeConfigs: StateFlow<List<PhotoTypeConfig>> = context.photoTypeDataStore.data
-        .map { prefs -> deserializeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS]) }
+    val photoTypeConfigs: StateFlow<List<PhotoTypeConfig>> = photoTypeConfigsFlow(context)
         .stateIn(viewModelScope, SharingStarted.Eagerly, PhotoType.DEFAULT_CONFIGS)
 
     /** logEnabled 的可变后备，供 [toggleLog] 内部更新。 */
@@ -313,11 +362,11 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 context.photoTypeDataStore.edit { prefs ->
-                    val current = deserializeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS])
+                    val current = deserializePhotoTypeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS])
                     val updated = current.map {
                         if (it.id == config.id) it.copy(displayName = trimmed) else it
                     }
-                    prefs[KEY_PHOTO_TYPE_CONFIGS] = serializeConfigs(updated)
+                    prefs[KEY_PHOTO_TYPE_CONFIGS] = serializePhotoTypeConfigs(updated)
                 }
             }
         }
@@ -335,12 +384,12 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 context.photoTypeDataStore.edit { prefs ->
-                    val current = deserializeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS])
+                    val current = deserializePhotoTypeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS])
                     val newConfig = PhotoTypeConfig(
                         id = "custom_${System.currentTimeMillis()}",
                         displayName = trimmed,
                     )
-                    prefs[KEY_PHOTO_TYPE_CONFIGS] = serializeConfigs(current + newConfig)
+                    prefs[KEY_PHOTO_TYPE_CONFIGS] = serializePhotoTypeConfigs(current + newConfig)
                 }
             }
         }
@@ -356,9 +405,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 context.photoTypeDataStore.edit { prefs ->
-                    val current = deserializeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS])
+                    val current = deserializePhotoTypeConfigs(prefs[KEY_PHOTO_TYPE_CONFIGS])
                     if (current.size <= 1) return@edit
-                    prefs[KEY_PHOTO_TYPE_CONFIGS] = serializeConfigs(
+                    prefs[KEY_PHOTO_TYPE_CONFIGS] = serializePhotoTypeConfigs(
                         current.filterNot { it.id == config.id },
                     )
                 }
@@ -419,42 +468,5 @@ class SettingsViewModel @Inject constructor(
 
         val KEY_GOLDEN_RATIO_GRID = booleanPreferencesKey("golden_ratio_grid")
         val KEY_CENTER_MARK = booleanPreferencesKey("center_mark")
-        val KEY_PHOTO_TYPE_CONFIGS = stringPreferencesKey("photo_type_configs")
-
-        /** 将配置列表序列化为 JSON 字符串（`[{"id":..,"displayName":..},...]`）。 */
-        fun serializeConfigs(configs: List<PhotoTypeConfig>): String {
-            val arr = JSONArray()
-            for (c in configs) {
-                val obj = JSONObject()
-                obj.put("id", c.id)
-                obj.put("displayName", c.displayName)
-                arr.put(obj)
-            }
-            return arr.toString()
-        }
-
-        /**
-         * 反序列化 JSON 字符串为配置列表。
-         *
-         * - null/空串/解析失败 → 返回 [PhotoType.DEFAULT_CONFIGS]（向后兼容首次安装与损坏数据）
-         * - 解析结果为空数组 → 返回 [PhotoType.DEFAULT_CONFIGS]（兜底，避免无类型可用）
-         */
-        fun deserializeConfigs(json: String?): List<PhotoTypeConfig> {
-            if (json.isNullOrBlank()) return PhotoType.DEFAULT_CONFIGS
-            return runCatching {
-                val arr = JSONArray(json)
-                val result = ArrayList<PhotoTypeConfig>(arr.length())
-                for (i in 0 until arr.length()) {
-                    val obj = arr.getJSONObject(i)
-                    result.add(
-                        PhotoTypeConfig(
-                            id = obj.getString("id"),
-                            displayName = obj.getString("displayName"),
-                        ),
-                    )
-                }
-                result.ifEmpty { PhotoType.DEFAULT_CONFIGS }
-            }.getOrDefault(PhotoType.DEFAULT_CONFIGS)
-        }
     }
 }

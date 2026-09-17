@@ -47,12 +47,17 @@ data class RecentFileItem(
 /**
  * 列映射待确认状态：文件无表头且未确认过列映射时，暂存样例与文件信息，
  * 由 UI 层弹出 [com.banktool.loanphoto.ui.customer.components.ColumnMappingDialog]。
+ *
+ * [previousColumnMap] 记录确认前的旧列映射（取自当前会话 [UiState.resolvedColumnMap]：
+ * 会话内已加载过该文件时为真实生效映射，否则为会话默认映射），
+ * 供 [CustomerListViewModel.confirmColumnMapping] 迁移映射前的已拍进度。
  */
 data class PendingColumnMapping(
     val uri: String,
     val fileName: String,
     val excelUriMd5: String,
     val columnSamples: List<String>,
+    val previousColumnMap: List<ColumnField>? = null,
 )
 
 /**
@@ -204,6 +209,8 @@ class CustomerListViewModel @Inject constructor(
                                     fileName = resolvedName,
                                     excelUriMd5 = md5,
                                     columnSamples = detected.rawFirstRowSamples,
+                                    // 记录确认前的旧映射，供确认后迁移旧进度（见 confirmColumnMapping）
+                                    previousColumnMap = it.resolvedColumnMap,
                                 ),
                             )
                         }
@@ -224,21 +231,35 @@ class CustomerListViewModel @Inject constructor(
     }
 
     /**
-     * 用户在列映射确认弹窗点击「确认」：持久化映射并按映射重新解析渲染。
+     * 用户在列映射确认弹窗点击「确认」：迁移旧进度、持久化映射并按映射重新解析渲染。
      *
-     * 注意：列映射改变会改变 borrower/addr 取值 → progressKey 变化 →
-     * 已拍进度关联随之变化（预期行为：映射正确后进度才关联正确），无需特殊处理。
+     * 列映射改变会改变 borrower/addr 取值 → progressKey 变化 → 映射前已拍进度失联。
+     * 因此在用新映射重解析得到 rows 后、保存新 column_map 前，若存在旧映射
+     * （[PendingColumnMapping.previousColumnMap]）且与新映射不同，则用旧映射对同一批
+     * 物理行重算 oldProgressKey，逐行 [ProgressRepository.copyProgress] 迁移到新键
+     * （旧键条目保留不删、新键已有进度不覆盖）。
+     *
+     * 迁移失败不阻断导入；旧映射不存在（同会话内首次加载且无历史映射可参照）时跳过迁移。
      */
     fun confirmColumnMapping(mapping: List<ColumnField>) {
         val pending = _uiState.value.pendingColumnMapping ?: return
         viewModelScope.launch {
             try {
+                // 先按新映射重解析，再保存映射：解析失败时保留旧状态便于用户重试
+                val result = excelRepository.readExcel(pending.uri, mapping, skipFirstRow = false)
+                val oldMap = pending.previousColumnMap
+                if (oldMap != null && oldMap != mapping) {
+                    val migrated = migrateProgressForRemap(pending.uri, oldMap, result)
+                    Timber.i(
+                        "confirmColumnMapping: 进度迁移 %d 条, uriMd5=%s",
+                        migrated, pending.excelUriMd5,
+                    )
+                }
                 excelDataIndexRepository.saveColumnMap(pending.excelUriMd5, mapping, hasHeader = false)
                 Timber.i(
-                    "confirmColumnMapping: 保存列映射 %s, uriMd5=%s（progressKey 将随映射变化）",
+                    "confirmColumnMapping: 保存列映射 %s, uriMd5=%s",
                     mapping, pending.excelUriMd5,
                 )
-                val result = excelRepository.readExcel(pending.uri, mapping, skipFirstRow = false)
                 applyLoadedExcel(pending.uri, pending.fileName, pending.excelUriMd5, result)
             } catch (e: Exception) {
                 Timber.e(e, "应用列映射失败")
@@ -250,6 +271,35 @@ class CustomerListViewModel @Inject constructor(
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * 列映射变更时的进度迁移：用 [oldMap] 重读同一文件（与新解析一致从物理首行开始），
+     * 按物理行号（[CustomerRow.rowIndex]）对齐新旧行，把旧键的已拍进度复制到新键。
+     *
+     * 全空行跳过逻辑随映射不同而不同：某行在旧映射下被跳过时无旧键，自然不迁移。
+     * 返回触发 copyProgress 的行数；旧键条目不存在时 copyProgress 内部为无操作。
+     */
+    private suspend fun migrateProgressForRemap(
+        uri: String,
+        oldMap: List<ColumnField>,
+        newResult: ExcelReadResult,
+    ): Int {
+        return try {
+            val oldResult = excelRepository.readExcel(uri, oldMap, skipFirstRow = false)
+            val oldKeysByRowIndex = oldResult.rows.associate { it.rowIndex to it.progressKey }
+            var migrated = 0
+            for (row in newResult.rows) {
+                val oldKey = oldKeysByRowIndex[row.rowIndex] ?: continue
+                if (oldKey == row.progressKey) continue
+                progressRepository.copyProgress(oldKey, row.progressKey)
+                migrated++
+            }
+            migrated
+        } catch (e: Exception) {
+            Timber.w(e, "列映射进度迁移失败（不阻断导入）")
+            0
         }
     }
 
